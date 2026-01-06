@@ -1,8 +1,8 @@
-# MeshCore-Cardputer
+# MeshCore-Cardputer-ADV
 
 Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for M5Stack Cardputer-Adv.
 
-![MeshCore-Cardputer](docs/images/title.jpg)
+![MeshCore-Cardputer-ADV](docs/images/title.jpg)
 *Custom TFT UI for M5Stack Cardputer-Adv with DX-LR30-900M22SP LoRa module*
 
 ##  Features
@@ -91,8 +91,8 @@ You have two options:
 
 ```bash
 # Clone the repository
-git clone https://github.com/[your-username]/MeshCore-Cardputer.git
-cd MeshCore-Cardputer
+git clone https://github.com/Stachugit/MeshCore-Cardputer-ADV.git
+cd MeshCore-Cardputer-ADV
 
 # Build and upload
 pio run -e m5stack_cardputer_companion_headless --target upload
@@ -116,7 +116,7 @@ pio run -e m5stack_cardputer_companion_headless --target upload
 ##  Project Structure
 
 ```
-MeshCore-Cardputer/
+MeshCore-Cardputer-ADV/
  examples/
     companion_radio/
         ui-keyboard/          # Main UI implementation
@@ -218,7 +218,7 @@ Contributions are welcome! Feel free to:
 ##  Links
 
 - Original MeshCore: [[Link](https://github.com/meshcore-dev/MeshCore)]
-- M5Stack Cardputer: https://shop.m5stack.com/products/m5stack-cardputer-kit-w-m5stamps3
+- M5Stack Cardputer-ADV: https://shop.m5stack.com/products/m5stack-cardputer-adv-version-esp32-s3
 - Cardputer-Adv 3.3V Mod: https://www.reddit.com/r/CardPuter/comments/1pjlkby/cardputer_adv_33v_mod/
 
 ##  Disclaimer

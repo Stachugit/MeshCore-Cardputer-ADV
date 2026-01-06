@@ -1,6 +1,9 @@
 # MeshCore-Cardputer
 
-Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for M5Stack Cardputer.
+Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for M5Stack Cardputer-Adv.
+
+![MeshCore-Cardputer](docs/images/title.jpg)
+*Custom TFT UI for M5Stack Cardputer-Adv with DX-LR30-900M22SP LoRa module*
 
 ##  Features
 
@@ -36,7 +39,7 @@ Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for
 ##  Requirements
 
 ### Hardware
-- **Device**: M5Stack Cardputer (ESP32-S3)
+- **Device**: M5Stack Cardputer-Adv (ESP32-S3)
 - **Display**: 240x135 TFT
 - **LoRa Module**: DX-LR30-900M22SP (based on SX1262 chip)
 
@@ -48,9 +51,12 @@ Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for
 
 The project uses the **DX-LR30-900M22SP** LoRa module (SX1262 chipset). Connect as follows:
 
+![LoRa Module](docs/images/lora-module.jpg)
+*DX-LR30-900M22SP LoRa Module (SX1262)*
+
 | Module Pin | Cardputer GPIO | Description |
 |------------|----------------|-------------|
-| VCC        | 3V3            | Power supply |
+| VCC        | 3V3            | Power supply (3.3V) |
 | GND        | GND            | Ground |
 | NSS        | G5             | Chip Select |
 | NRST       | G3             | Reset |
@@ -63,7 +69,23 @@ The project uses the **DX-LR30-900M22SP** LoRa module (SX1262 chipset). Connect 
 | RXEN       | G13            | RX Enable |
 | TXEN       | G15            | TX Enable |
 
-**Note**: The RXEN and TXEN pins are used for controlling the external RF switch on this module.
+![Cardputer-Adv with LoRa](docs/images/cardputer-with-lora.jpg)
+*M5Stack Cardputer-Adv with DX-LR30-900M22SP module installed*
+
+###  Important: 3.3V Power Requirement
+
+**The DX-LR30-900M22SP module requires 3.3V power supply.** The Cardputer-Adv's 5V pin cannot be used directly.
+
+You have two options:
+
+1. **Use a 3.3V Step-Down Converter**  
+   Add a voltage regulator between the 5V pin and the LoRa module's VCC.
+
+2. **Modify the Cardputer-Adv for 3.3V Output** (Recommended)  
+   Follow this guide to add a 3.3V pin to your Cardputer-Adv:  
+    [Cardputer-Adv 3.3V Mod Guide (Reddit)](https://www.reddit.com/r/CardPuter/comments/1pjlkby/cardputer_adv_33v_mod/)
+
+**Note**: Using 5V on the LoRa module will damage it permanently!
 
 ##  Building & Flashing
 
@@ -78,18 +100,18 @@ pio run -e m5stack_cardputer_companion_headless --target upload
 
 ##  Initial Setup
 
-**Important**: Before using the Cardputer UI, you must first configure the device using the **MeshCore mobile app**:
+**Important**: Before using the Cardputer-Adv UI, you must first configure the device using the **MeshCore mobile app**:
 
-1. Flash the firmware to your M5Stack Cardputer
+1. Flash the firmware to your M5Stack Cardputer-Adv
 2. Download the MeshCore app on your smartphone
-3. Connect to the Cardputer via Bluetooth
+3. Connect to the Cardputer-Adv via Bluetooth
 4. Configure essential settings:
    - Node name
    - Region/frequency settings
    - Network keys
    - Channel configuration
 
-**Future Updates**: Some settings will be configurable directly on the Cardputer without needing the mobile app.
+**Future Updates**: Some settings will be configurable directly on the Cardputer-Adv without needing the mobile app.
 
 ##  Project Structure
 
@@ -193,18 +215,17 @@ Contributions are welcome! Feel free to:
 - Submit pull requests
 - Improve documentation
 
-##  Screenshots
-
-*(soon)*
-
 ##  Links
 
 - Original MeshCore: [[Link](https://github.com/meshcore-dev/MeshCore)]
 - M5Stack Cardputer: https://shop.m5stack.com/products/m5stack-cardputer-kit-w-m5stamps3
+- Cardputer-Adv 3.3V Mod: https://www.reddit.com/r/CardPuter/comments/1pjlkby/cardputer_adv_33v_mod/
 
 ##  Disclaimer
 
 This is an independent UI modification. For core mesh networking functionality and protocol questions, refer to the original MeshCore project.
+
+**Hardware Safety**: Ensure proper voltage levels when connecting the LoRa module. Using incorrect voltage will damage the module permanently.
 
 ---
 

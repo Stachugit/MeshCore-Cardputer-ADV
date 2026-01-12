@@ -11,17 +11,29 @@
 class M5CardputerBoard : public ESP32Board {
 public:
   void begin() {
-    // Initialize M5Cardputer hardware with keyboard enabled
+    pinMode(46, OUTPUT);
+    digitalWrite(46, HIGH);
+    delay(100);  
+
+    ESP32Board::begin();
+
+
     auto cfg = M5.config();
     cfg.clear_display = true;
-    cfg.internal_imu = false;  // No IMU on Cardputer-Adv
+    cfg.internal_imu = false;  
     cfg.internal_rtc = true;
     cfg.internal_spk = true;
     cfg.internal_mic = true;
-    M5Cardputer.begin(cfg, true);  // true = enable keyboard
+    M5Cardputer.begin(cfg, true);  
+    
+    M5Cardputer.Keyboard.begin();
 
-    // Call parent class initialization for standard ESP32 setup
-    ESP32Board::begin();
+    M5.In_I2C.writeRegister8(0x43, 0x03, 0x00, 100000);  
+    delay(10);
+    M5.In_I2C.writeRegister8(0x43, 0x01, 0xFF, 100000); 
+    delay(200);  
+
+    Serial.println("LoRa Cap I/O expander (PI4IOE at 0x43 on SDA=8,SCL=9) configured");
 
     Serial.println("M5Stack Cardputer-Adv initialized");
     Serial.print("Battery voltage: ");

@@ -148,6 +148,9 @@ public:
     void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) override;
     void notify(UIEventType t = UIEventType::none) override;
     
+    // Chat history synchronization for BLE
+    void syncChatHistoryToBLE(int max_messages = 10);
+    
     void showAlert(const char* msg);
     void gotoScreen(MenuScreen screen);
     

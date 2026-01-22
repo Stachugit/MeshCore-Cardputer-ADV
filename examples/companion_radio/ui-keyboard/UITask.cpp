@@ -1697,4 +1697,66 @@ void UITask::notify(UIEventType t) {
     _need_refresh = true;
 }
 
+void UITask::syncChatHistoryToBLE(int max_messages) {
+    // Sync last N messages from chat history to phone via BLE
+    if (_chat_history_count == 0) {
+        Serial.println("No chat history to sync");
+        return;
+    }
+    
+    int start_idx = (_chat_history_count > max_messages) ? 
+                    (_chat_history_count - max_messages) : 0;
+    
+    Serial.printf("Syncing %d messages to BLE (from idx %d to %d)\n", 
+                  _chat_history_count - start_idx, start_idx, _chat_history_count - 1);
+    
+    for (int i = start_idx; i < _chat_history_count; i++) {
+        ChatMessage& msg = _chat_history[i];
+        
+        // ONLY sync INCOMING messages (is_outgoing = false)
+        // Outgoing messages are already sent through mesh and will appear on phone naturally
+        if (msg.is_outgoing) {
+            continue; // Skip outgoing messages
+        }
+        
+        // Find contact or channel info
+        if (msg.is_channel) {
+            // Find channel by name
+            ChannelDetails channel;
+            bool found = false;
+            for (int ch_idx = 0; ch_idx < MAX_GROUP_CHANNELS; ch_idx++) {
+                if (the_mesh.getChannel(ch_idx, channel) && 
+                    strcmp(channel.name, msg.contact_or_channel) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (found) {
+                the_mesh.queueOutgoingMessageForBLE(NULL, &channel, 
+                                                     msg.from_name, msg.text, msg.timestamp);
+            }
+        } else {
+            // Find contact by name
+            ContactInfo contact;
+            bool found = false;
+            
+            ContactsIterator iter = the_mesh.startContactsIterator();
+            while (iter.hasNext(&the_mesh, contact)) {
+                if (strcmp(contact.name, msg.contact_or_channel) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (found) {
+                the_mesh.queueOutgoingMessageForBLE(&contact, NULL,
+                                                     msg.from_name, msg.text, msg.timestamp);
+            }
+        }
+    }
+    
+    Serial.println("Chat history sync complete");
+}
+
 

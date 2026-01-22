@@ -227,6 +227,74 @@ int MyMesh::getFromOfflineQueue(uint8_t frame[]) {
   return 0; // queue is empty
 }
 
+void MyMesh::queueOutgoingMessageForBLE(const ContactInfo* contact, const ChannelDetails* channel,
+                                         const char* from_name, const char* text, uint32_t timestamp) {
+  // Format outgoing message as BLE frame for phone synchronization
+  int i = 0;
+  uint8_t frame[MAX_FRAME_SIZE];
+  
+  bool is_channel = (channel != NULL);
+  
+  if (is_channel) {
+    // Channel message
+    if (app_target_ver >= 3) {
+      frame[i++] = RESP_CODE_CHANNEL_MSG_RECV_V3;
+      frame[i++] = 0; // SNR (0 for outgoing)
+      frame[i++] = 0; // reserved1
+      frame[i++] = 0; // reserved2
+    } else {
+      frame[i++] = RESP_CODE_CHANNEL_MSG_RECV;
+    }
+    
+    // Find channel index (1 byte, not 6-byte hash!)
+    uint8_t channel_idx = findChannelIdx(channel->channel);
+    frame[i++] = channel_idx;
+    
+    frame[i++] = 0xFF; // path_len (0xFF = self-originated)
+    frame[i++] = TXT_TYPE_PLAIN;
+    memcpy(&frame[i], &timestamp, 4);
+    i += 4;
+    
+    // Add sender name prefix for channel messages
+    int name_len = strlen(from_name);
+    if (name_len > 30) name_len = 30;
+    memcpy(&frame[i], from_name, name_len);
+    i += name_len;
+    frame[i++] = ':';
+    frame[i++] = ' ';
+    
+  } else if (contact) {
+    // Direct message to contact
+    if (app_target_ver >= 3) {
+      frame[i++] = RESP_CODE_CONTACT_MSG_RECV_V3;
+      frame[i++] = 0; // SNR (0 for outgoing)
+      frame[i++] = 0; // reserved1
+      frame[i++] = 0; // reserved2
+    } else {
+      frame[i++] = RESP_CODE_CONTACT_MSG_RECV;
+    }
+    memcpy(&frame[i], contact->id.pub_key, 6);
+    i += 6;
+    frame[i++] = 0xFF; // path_len (0xFF = self-originated)
+    frame[i++] = TXT_TYPE_PLAIN;
+    memcpy(&frame[i], &timestamp, 4);
+    i += 4;
+  }
+  
+  // Add message text
+  int text_len = strlen(text);
+  if (i + text_len > MAX_FRAME_SIZE) {
+    text_len = MAX_FRAME_SIZE - i;
+  }
+  memcpy(&frame[i], text, text_len);
+  i += text_len;
+  
+  // Add to offline queue for BLE transmission
+  addToOfflineQueue(frame, i);
+  
+  MESH_DEBUG_PRINTLN("Queued outgoing message for BLE sync: %d bytes", i);
+}
+
 float MyMesh::getAirtimeBudgetFactor() const {
   return _prefs.airtime_factor;
 }
@@ -881,6 +949,11 @@ void MyMesh::handleCmdFrame(size_t len) {
     memcpy(&out_frame[i], _prefs.node_name, tlen);
     i += tlen;
     _serial->writeFrame(out_frame, i);
+    
+    // NOTE: Don't sync chat history here!
+    // offline_queue already contains all received messages with correct timestamps
+    // Syncing from _chat_history would duplicate messages and use wrong timestamps (millis() instead of sender_timestamp)
+    
   } else if (cmd_frame[0] == CMD_SEND_TXT_MSG && len >= 14) {
     int i = 1;
     uint8_t txt_type = cmd_frame[i++];

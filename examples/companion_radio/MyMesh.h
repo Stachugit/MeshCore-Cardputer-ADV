@@ -99,6 +99,9 @@ public:
   void handleCmdFrame(size_t len);
   bool advert();
   void enterCLIRescue();
+  
+  void queueOutgoingMessageForBLE(const ContactInfo* contact, const ChannelDetails* channel,
+                                  const char* from_name, const char* text, uint32_t timestamp);
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);
 

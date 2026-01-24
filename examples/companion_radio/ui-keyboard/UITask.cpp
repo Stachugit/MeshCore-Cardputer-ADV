@@ -3,6 +3,40 @@
 #include "../MyMesh.h"
 #include "target.h"
 #include <M5Cardputer.h>
+#include <qrcodedisplay.h>
+#include <esp_sleep.h>  // For ESP32 light sleep functionality
+
+// QRcode implementation for M5GFX
+class QRcode_M5GFX : public QRcodeDisplay {
+private:
+    M5GFX* _display;
+public:
+    QRcode_M5GFX(M5GFX* display) : _display(display) {}
+    
+    void init() override {
+        QRcodeDisplay::init();
+        // Set multiply factor for QR code that fits on 240x135 screen
+        multiply = 3;
+        // Center the QR code on screen
+        offsetsX = 55;
+        offsetsY = 0;
+    }
+    
+    void screenwhite() override {
+        _display->fillScreen(0xFFFF); // White background
+    }
+    
+    void screenupdate() override {
+        // M5GFX updates immediately, no buffer to flush
+    }
+    
+protected:
+    void drawPixel(int x, int y, int color) override {
+        uint16_t gfx_color = (color == 1) ? 0x0000 : 0xFFFF; // 1=black, 0=white
+        // Draw a square of multiply x multiply pixels for each QR module
+        _display->fillRect(x, y, multiply, multiply, gfx_color);
+    }
+};
 
 #ifndef AUTO_OFF_MILLIS
   #define AUTO_OFF_MILLIS 300000  // 5 minutes
@@ -15,15 +49,19 @@ extern MyMesh the_mesh;
 UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
     : AbstractUITask(board, serial_interface), _display(nullptr),
       _menu_state(MenuScreen::CONTACTS), _next_refresh(0), _auto_off(0),
+      _screen_timeout_millis(300000), _screen_sleeping(false),
       _need_refresh(false), _alert_expiry(0), _input_length(0), _input_mode(false),
       _scroll_pos(0), _selected_idx(0), _chat_is_channel(false),
       _chat_history_count(0), _chat_scroll(0), _notification_expiry(0), _has_notification(false),
       _chat_msg_scroll_index(0), _search_filter_length(0), _backspace_hold_start(0), _backspace_was_held(false),
-      _settings_selected(false), _settings_menu_idx(0), _settings_item_idx(0),
+      _last_backspace_delete(0),
+      _settings_selected(false), _settings_category(SettingsCategory::MAIN_MENU), _settings_menu_idx(0), _settings_item_idx(0), _settings_scroll_pos(0), _public_info_scroll_pos(0),
+      _editing_name(false), _show_qr_code(false), _edit_buffer_length(0),
       _brightness(128), _main_color_idx(0), _secondary_color_idx(1) {
     _alert[0] = '\0';
     _input_buffer[0] = '\0';
     _search_filter[0] = '\0';
+    _edit_buffer[0] = '\0';
     _notification_from[0] = '\0';
     _notification_text[0] = '\0';
     _last_read_channel[0] = '\0';
@@ -44,6 +82,49 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
     
     // Load settings from Preferences (safe, doesn't affect mesh memory)
     loadSettings();
+    
+    // Restore screen timeout from NodePrefs
+    if (_node_prefs) {
+        // On first boot after update, screen_timeout_seconds will be 0
+        // MyMesh.cpp now sets default to 300, but handle legacy case
+        if (_node_prefs->screen_timeout_seconds == 0) {
+            // This will be 0 either on first boot or if user selected "Never"
+            // Since MyMesh sets default to 300, reaching 0 means user chose "Never"
+            _screen_timeout_millis = 0; // Never timeout
+        } else {
+            _screen_timeout_millis = (unsigned long)_node_prefs->screen_timeout_seconds * 1000UL;
+        }
+        
+        if (_node_prefs->screen_timeout_seconds == 0) {
+            Serial.println("[Screen] Timeout: Never");
+        } else {
+            Serial.printf("[Screen] Timeout set to %u seconds\n", _node_prefs->screen_timeout_seconds);
+        }
+    }
+    
+    // Set initial auto-off time
+    if (_screen_timeout_millis > 0) {
+        _auto_off = millis() + _screen_timeout_millis;
+    } else {
+        _auto_off = 0; // Never timeout
+    }
+    
+    // Restore GPS state from NodePrefs
+#ifdef HAS_GPS
+    if (_sensors && _node_prefs) {
+        Serial.printf("[GPS] Restoring GPS state from NodePrefs: %s\n", 
+                      _node_prefs->gps_enabled ? "ENABLED" : "DISABLED");
+        
+        // Set NodePrefs pointer in sensor manager for future syncing
+        extern CardputerSensorManager sensors;
+        sensors.setNodePrefs(_node_prefs);
+        
+        // Restore GPS state
+        if (_node_prefs->gps_enabled) {
+            _sensors->setSettingValue("gps", "1");
+        }
+    }
+#endif
     
     _menu_state = MenuScreen::CONTACTS;
     _scroll_pos = 0;
@@ -69,33 +150,61 @@ void UITask::loop() {
             }
             _need_refresh = true;
             
-            // Reset auto-off timer
-            _auto_off = millis() + AUTO_OFF_MILLIS;
+            // Reset auto-off timer (using configured timeout)
+            if (_screen_timeout_millis > 0) {
+                _auto_off = millis() + _screen_timeout_millis;
+            } else {
+                _auto_off = 0; // Never timeout
+            }
+            
+            // Wake from sleep if sleeping
+            if (_screen_sleeping) {
+                _screen_sleeping = false;
+                Serial.println("[Sleep] Waking from light sleep (key press)");
+            }
+            
             if (_display && !_display->isOn()) {
                 _display->turnOn();
+                Serial.println("[Screen] Display turned on (key press)");
             }
         }
     }
     
     // Check for backspace hold (continuous checking while key is pressed)
     if (_backspace_hold_start > 0) {
-        if (M5Cardputer.Keyboard.isChange() && !M5Cardputer.Keyboard.isPressed()) {
-            // Key released - reset timer
+        // Check if ANY key is still pressed - if not, stop deletion
+        if (!M5Cardputer.Keyboard.isPressed()) {
+            // Key released - stop deletion immediately
             _backspace_hold_start = 0;
             _backspace_was_held = false;
-        } else if (millis() - _backspace_hold_start > 1500 && !_backspace_was_held) {
-            // Held for 500ms - clear buffer/filter
-            _backspace_was_held = true;
-            if (_menu_state == MenuScreen::CHAT && _input_mode) {
-                _input_buffer[0] = '\0';
-                _input_length = 0;
-            } else if (_menu_state == MenuScreen::CONTACTS || _menu_state == MenuScreen::CHANNELS) {
-                _search_filter[0] = '\0';
-                _search_filter_length = 0;
-                _scroll_pos = 0;
-                _selected_idx = 0;
+            _last_backspace_delete = 0;
+        } else if (millis() - _backspace_hold_start > 500) {
+            // Held for 500ms+ - start fast deletion (one char every 100ms)
+            if (!_backspace_was_held) {
+                _backspace_was_held = true;
+                _last_backspace_delete = millis();
             }
-            _need_refresh = true;
+            
+            // Delete one character every 100ms while holding
+            if (millis() - _last_backspace_delete >= 100) {
+                _last_backspace_delete = millis();
+                
+                if (_menu_state == MenuScreen::CHAT && _input_mode && _input_length > 0) {
+                    _input_length--;
+                    _input_buffer[_input_length] = '\0';
+                    _need_refresh = true;
+                } else if ((_menu_state == MenuScreen::CONTACTS || _menu_state == MenuScreen::CHANNELS) && _search_filter_length > 0) {
+                    _search_filter_length--;
+                    _search_filter[_search_filter_length] = '\0';
+                    _scroll_pos = 0;
+                    _selected_idx = 0;
+                    _need_refresh = true;
+                } else if (_menu_state == MenuScreen::SETTINGS && _editing_name && _edit_buffer_length > 0) {
+                    _edit_buffer_length--;
+                    _edit_buffer[_edit_buffer_length] = '\0';
+                    _need_refresh = true;
+                }
+            }
         }
     }
     
@@ -103,10 +212,9 @@ void UITask::loop() {
     if (_display && _display->isOn() && _need_refresh) {
         _need_refresh = false;
         
-        // Black background
+        // Don't clear entire screen - reduces flicker!
+        // Each UI element will draw its own background
         _display->startFrame();
-        _display->setColor(DisplayDriver::DARK);
-        _display->fillRect(0, 0, _display->width(), _display->height());
         
         switch (_menu_state) {
             case MenuScreen::CONTACTS:
@@ -141,13 +249,27 @@ void UITask::loop() {
         _display->endFrame();
     }
     
-    // Auto-off display
-    if (_display && _display->isOn() && millis() > _auto_off) {
+    // Auto-off display for battery optimization
+    if (_display && _display->isOn() && _screen_timeout_millis > 0 && _auto_off > 0 && millis() > _auto_off) {
+        Serial.println("[Screen] Timeout - turning off display");
         _display->turnOff();
+        _screen_sleeping = true;
+        // Note: CPU stays active to receive LoRa packets and keyboard input
+        // Light sleep was too deep and prevented proper operation
+    }
+    
+    // Check for notification timeout
+    if (_has_notification && millis() >= _notification_expiry) {
+        _has_notification = false;
+        _need_refresh = true;
     }
 }
 
 void UITask::renderContactList() {
+    // Clear screen background (reduces flicker vs clearing every frame)
+    _display->setColor(DisplayDriver::DARK);
+    _display->fillRect(0, 0, 240, 135);
+    
     // Header bar (0, 0, 240, 28)
     _display->setColor(DisplayDriver::LIGHT);
     _display->drawRect(0, 0, 240, 28);
@@ -276,6 +398,10 @@ void UITask::renderContactList() {
 }
 
 void UITask::renderChannelList() {
+    // Clear screen background (reduces flicker vs clearing every frame)
+    _display->setColor(DisplayDriver::DARK);
+    _display->fillRect(0, 0, 240, 135);
+    
     // Header bar (0, 0, 240, 28)
     _display->setColor(DisplayDriver::LIGHT);
     _display->drawRect(0, 0, 240, 28);
@@ -417,6 +543,10 @@ void UITask::renderChannelList() {
 }
 
 void UITask::renderChatScreen() {
+    // Clear screen background (reduces flicker vs clearing every frame)
+    _display->setColor(DisplayDriver::DARK);
+    _display->fillRect(0, 0, 240, 135);
+    
     // === HEADER BAR === (0, 0, 240, 28)
     _display->setColor(DisplayDriver::LIGHT);
     _display->drawRect(0, 0, 240, 28);
@@ -806,6 +936,10 @@ void UITask::renderBottomBar() {
 }
 
 void UITask::renderSettingsMenu() {
+    // Clear screen background (reduces flicker vs clearing every frame)
+    _display->setColor(DisplayDriver::DARK);
+    _display->fillRect(0, 0, 240, 135);
+    
     // Header bar (0, 0, 240, 28) - similar to main menu
     _display->setColor(DisplayDriver::LIGHT);
     _display->drawRect(0, 0, 240, 28);
@@ -815,85 +949,568 @@ void UITask::renderSettingsMenu() {
     
     // Settings title (center)
     _display->setTextSize(2);
-    _display->setCursor(75, 7);
-    _display->print("Settings");
     
-    // No BLE PIN on right (keeping it minimal)
-    
-    // Settings list (middle section)
-    _display->setTextSize(2);
-    int y_start = 35;
-    int line_height = 18;
-    
-    // Brightness setting
-    _display->setColor(DisplayDriver::LIGHT);
-    if (_settings_item_idx == 0) {
-        _display->fillRect(0, y_start - 2, 240, line_height);
-        _display->setColor(DisplayDriver::DARK);
+    if (_settings_category == SettingsCategory::MAIN_MENU) {
+        _display->setCursor(75, 7);
+        _display->print("Settings");
+        
+        // Show categories list (max 3 visible at once, like contact/channel lists)
+        const char* categories[] = {"Theme", "Public Info", "Radio Setup", "Other", "Device Info"};
+        int num_categories = 5;
+        
+        // Render 3 category items (y: 27, 54, 81)
+        int y_positions[3] = {27, 54, 81};
+        
+        for (int i = 0; i < 3; i++) {
+            int category_idx = _settings_scroll_pos + i;
+            if (category_idx >= num_categories) break;
+            
+            int y = y_positions[i];
+            
+            // Draw border
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->drawRect(0, y, 240, 28);
+            
+            // Fill white if selected
+            if (category_idx == _settings_item_idx) {
+                _display->fillRect(0, y, 240, 28);
+                _display->setColor(DisplayDriver::DARK);  // Black text
+                // Arrow indicator
+                _display->setCursor(2, y + 7);
+                _display->setTextSize(2);
+                _display->print(">");
+            } else {
+                _display->setColor(DisplayDriver::LIGHT);  // White text
+            }
+            
+            _display->setTextSize(2);
+            _display->setCursor(16, y + 6);
+            _display->print(categories[category_idx]);
+        }
+        
+    } else if (_settings_category == SettingsCategory::THEME) {
+        _display->setCursor(87, 7);
+        _display->print("Theme");
+        
+        // Show theme settings
+        _display->setTextSize(2);
+        int y_start = 35;
+        int line_height = 18;
+        
+        // Brightness setting
+        _display->setColor(DisplayDriver::LIGHT);
+        if (_settings_item_idx == 0) {
+            _display->fillRect(0, y_start - 2, 240, line_height);
+            _display->setColor(DisplayDriver::DARK);
+        }
+        _display->setCursor(10, y_start);
+        _display->print("Brightness: ");
+        if (_settings_item_idx == 0) {
+            _display->print("< ");
+        }
+        char brightness_str[8];
+        sprintf(brightness_str, "%d%%", (_brightness * 100) / 255);
+        _display->print(brightness_str);
+        if (_settings_item_idx == 0) {
+            _display->print(" >");
+        }
+        
+        // Main Color setting
+        y_start += line_height + 5;
+        _display->setColor(DisplayDriver::LIGHT);
+        if (_settings_item_idx == 1) {
+            _display->fillRect(0, y_start - 2, 240, line_height);
+            _display->setColor(DisplayDriver::DARK);
+        }
+        _display->setCursor(10, y_start);
+        _display->print("Main: ");
+        if (_settings_item_idx == 1) {
+            _display->print("< ");
+        }
+        _display->print(COLORS[_main_color_idx].name);
+        if (_settings_item_idx == 1) {
+            _display->print(" >");
+        }
+        
+        // Secondary Color setting
+        y_start += line_height + 5;
+        _display->setColor(DisplayDriver::LIGHT);
+        if (_settings_item_idx == 2) {
+            _display->fillRect(0, y_start - 2, 240, line_height);
+            _display->setColor(DisplayDriver::DARK);
+        }
+        _display->setCursor(10, y_start);
+        _display->print("Secondary: ");
+        if (_settings_item_idx == 2) {
+            _display->print("< ");
+        }
+        _display->print(COLORS[_secondary_color_idx].name);
+        if (_settings_item_idx == 2) {
+            _display->print(" >");
+        }
+        
+    } else if (_settings_category == SettingsCategory::PUBLIC_INFO) {
+        // Skip rendering menu if we're in edit mode (prevents flicker)
+        if (_editing_name || _show_qr_code) {
+            // Edit overlay will be rendered below
+        } else {
+            _display->setCursor(67, 7);
+            _display->print("Public Info");
+            
+            // Show Public Info options (3 options, 3 visible with scrolling)
+            const char* options[] = {"Change name", "Share key", "Share Position"};
+            int num_options = 3;
+        
+        // Render 3 option items (y: 27, 54, 81)
+        int y_positions[3] = {27, 54, 81};
+        
+        for (int i = 0; i < 3; i++) {
+            int option_idx = _public_info_scroll_pos + i;
+            if (option_idx >= num_options) break;
+            
+            int y = y_positions[i];
+            
+            // Draw border
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->drawRect(0, y, 240, 28);
+            
+            // Fill white if selected
+            if (option_idx == _settings_item_idx) {
+                _display->fillRect(0, y, 240, 28);
+                _display->setColor(DisplayDriver::DARK);  // Black text
+                // Arrow indicator
+                _display->setCursor(2, y + 7);
+                _display->setTextSize(2);
+                _display->print(">");
+            } else {
+                _display->setColor(DisplayDriver::LIGHT);  // White text
+            }
+            
+            _display->setTextSize(2);
+            _display->setCursor(16, y + 6);
+            _display->print(options[option_idx]);
+            
+            // Show checkbox for "Share Position" (now at index 2)
+            if (option_idx == 2) {
+                int checkbox_x = 200;
+                int checkbox_y = y + 7;
+                // Restore proper color for checkbox
+                if (option_idx == _settings_item_idx) {
+                    _display->setColor(DisplayDriver::DARK);
+                } else {
+                    _display->setColor(DisplayDriver::LIGHT);
+                }
+                // Draw checkbox outline
+                _display->drawRect(checkbox_x, checkbox_y, 14, 14);
+                // Fill if enabled
+                if (_node_prefs && _node_prefs->advert_loc_policy == ADVERT_LOC_SHARE) {
+                    _display->fillRect(checkbox_x + 2, checkbox_y + 2, 10, 10);
+                }
+            }
+        }
+        }
+        
+    } else if (_settings_category == SettingsCategory::RADIO_SETUP) {
+        _display->setCursor(67, 7);
+        _display->print("Radio Setup");
+        
+        // Show Radio Setup options
+#ifdef HAS_GPS
+        const char* options[] = {"GPS"};
+        int num_options = 1;
+#else
+        // No GPS support, show empty
+        _display->setTextSize(1);
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->setCursor(70, 60);
+        _display->print("(Empty)");
+        return;
+#endif
+        
+        // Render option items (y: 27, 54, 81)
+        int y_positions[3] = {27, 54, 81};
+        
+        for (int i = 0; i < min(3, num_options); i++) {
+            int option_idx = i;
+            if (option_idx >= num_options) break;
+            
+            int y = y_positions[i];
+            
+            // Draw border
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->drawRect(0, y, 240, 28);
+            
+            // Fill white if selected
+            if (option_idx == _settings_item_idx) {
+                _display->fillRect(0, y, 240, 28);
+                _display->setColor(DisplayDriver::DARK);  // Black text
+                // Arrow indicator
+                _display->setCursor(2, y + 7);
+                _display->setTextSize(2);
+                _display->print(">");
+            } else {
+                _display->setColor(DisplayDriver::LIGHT);  // White text
+            }
+            
+            _display->setTextSize(2);
+            _display->setCursor(16, y + 6);
+            _display->print(options[option_idx]);
+            
+            // Show checkbox for GPS option
+            if (option_idx == 0) {
+                int checkbox_x = 200;
+                int checkbox_y = y + 7;
+                // Restore proper color for checkbox
+                if (option_idx == _settings_item_idx) {
+                    _display->setColor(DisplayDriver::DARK);
+                } else {
+                    _display->setColor(DisplayDriver::LIGHT);
+                }
+                // Draw checkbox outline
+                _display->drawRect(checkbox_x, checkbox_y, 14, 14);
+                // Fill if enabled
+                if (_node_prefs && _node_prefs->gps_enabled) {
+                    _display->fillRect(checkbox_x + 2, checkbox_y + 2, 10, 10);
+                }
+            }
+        }
+        
+    } else if (_settings_category == SettingsCategory::OTHER) {
+        _display->setCursor(94, 7);
+        _display->print("Other");
+        
+        // Show Other settings (similar to Theme)
+        _display->setTextSize(2);
+        int y_start = 35;
+        int line_height = 18;
+        
+        // Sleep timeout setting
+        _display->setColor(DisplayDriver::LIGHT);
+        if (_settings_item_idx == 0) {
+            _display->fillRect(0, y_start - 2, 240, line_height);
+            _display->setColor(DisplayDriver::DARK);
+        }
+        _display->setCursor(10, y_start);
+        _display->print("Sleep: ");
+        if (_settings_item_idx == 0) {
+            _display->print("< ");
+        }
+        
+        // Display current timeout value
+        if (_node_prefs) {
+            if (_node_prefs->screen_timeout_seconds == 0) {
+                _display->print("Never");
+            } else if (_node_prefs->screen_timeout_seconds == 10) {
+                _display->print("10s");
+            } else if (_node_prefs->screen_timeout_seconds == 30) {
+                _display->print("30s");
+            } else if (_node_prefs->screen_timeout_seconds == 60) {
+                _display->print("1min");
+            } else if (_node_prefs->screen_timeout_seconds == 120) {
+                _display->print("2min");
+            } else if (_node_prefs->screen_timeout_seconds == 300) {
+                _display->print("5min");
+            } else {
+                // Fallback for custom values
+                char timeout_str[10];
+                sprintf(timeout_str, "%us", _node_prefs->screen_timeout_seconds);
+                _display->print(timeout_str);
+            }
+        }
+        
+        if (_settings_item_idx == 0) {
+            _display->print(" >");
+        }
+        
+    } else if (_settings_category == SettingsCategory::DEVICE_INFO) {
+        _display->setCursor(67, 7);
+        _display->print("Device Info");
+        
+        // Show device information
+        _display->setTextSize(1);
+        _display->setColor(DisplayDriver::LIGHT);
+        int y = 30;
+        int line_height = 12;
+        
+        // Device name
+        if (_node_prefs) {
+            _display->setCursor(5, y);
+            _display->print("Name: ");
+            _display->print(_node_prefs->node_name);
+            y += line_height;
+        }
+        
+        // Battery voltage and percentage
+        uint16_t battery_mv = getBattMilliVolts();
+        if (battery_mv > 0) {
+            const int minMilliVolts = 3000;
+            const int maxMilliVolts = 4200;
+            int battery_percent = ((battery_mv - minMilliVolts) * 100) / (maxMilliVolts - minMilliVolts);
+            if (battery_percent < 0) battery_percent = 0;
+            if (battery_percent > 100) battery_percent = 100;
+            
+            _display->setCursor(5, y);
+            _display->print("Battery: ");
+            char battery_str[32];
+            snprintf(battery_str, sizeof(battery_str), "%umV (%d%%)", battery_mv, battery_percent);
+            _display->print(battery_str);
+            y += line_height;
+        }
+        
+        // GPS Position
+        #ifdef HAS_GPS
+        if (_node_prefs && _node_prefs->gps_enabled && _sensors) {
+            double lat = _sensors->node_lat;
+            double lon = _sensors->node_lon;
+            
+            if (lat != 0 || lon != 0) {
+                _display->setCursor(5, y);
+                _display->print("Lat: ");
+                char lat_str[16];
+                snprintf(lat_str, sizeof(lat_str), "%.6f", lat);
+                _display->print(lat_str);
+                y += line_height;
+                
+                _display->setCursor(5, y);
+                _display->print("Lon: ");
+                char lon_str[16];
+                snprintf(lon_str, sizeof(lon_str), "%.6f", lon);
+                _display->print(lon_str);
+                y += line_height;
+            } else {
+                _display->setCursor(5, y);
+                _display->print("GPS: No fix");
+                y += line_height;
+            }
+        } else {
+            _display->setCursor(5, y);
+            _display->print("GPS: Disabled");
+            y += line_height;
+        }
+        #endif
+        
+        // Radio settings
+        if (_node_prefs) {
+            _display->setCursor(5, y);
+            _display->print("Freq: ");
+            char freq_str[16];
+            snprintf(freq_str, sizeof(freq_str), "%.3f", _node_prefs->freq / 1000000.0);
+            _display->print(freq_str);
+            _display->print(" MHz");
+            y += line_height;
+            
+            _display->setCursor(5, y);
+            _display->print("SF: ");
+            char radio_str[32];
+            snprintf(radio_str, sizeof(radio_str), "%u  BW: %.1f kHz", _node_prefs->sf, _node_prefs->bw);
+            _display->print(radio_str);
+            y += line_height;
+            
+            _display->setCursor(5, y);
+            _display->print("TX Power: ");
+            char power_str[16];
+            snprintf(power_str, sizeof(power_str), "%u dBm", _node_prefs->tx_power_dbm);
+            _display->print(power_str);
+            y += line_height;
+        }
+        
+        // Uptime
+        _display->setCursor(5, y);
+        _display->print("Uptime: ");
+        unsigned long uptime_sec = millis() / 1000;
+        unsigned long hours = uptime_sec / 3600;
+        unsigned long minutes = (uptime_sec % 3600) / 60;
+        unsigned long seconds = uptime_sec % 60;
+        char uptime_str[20];
+        snprintf(uptime_str, sizeof(uptime_str), "%luh %lum %lus", hours, minutes, seconds);
+        _display->print(uptime_str);
+        
+    } else {
+        // Other categories (empty for now)
+        const char* title = "";
+        switch (_settings_category) {
+            case SettingsCategory::PUBLIC_INFO: title = "Public Info"; break;
+            case SettingsCategory::RADIO_SETUP: title = "Radio Setup"; break;
+            case SettingsCategory::OTHER: title = "Other"; break;
+            default: title = "Settings"; break;
+        }
+        
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        // Empty message
+        _display->setTextSize(1);
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->setCursor(70, 60);
+        _display->print("(Empty)");
     }
-    _display->setCursor(10, y_start);
-    _display->print("Brightness: ");
-    char brightness_str[8];
-    sprintf(brightness_str, "%d%%", (_brightness * 100) / 255);
-    _display->print(brightness_str);
     
-    // Main Color setting
-    y_start += line_height + 5;
-    _display->setColor(DisplayDriver::LIGHT);
-    if (_settings_item_idx == 1) {
-        _display->fillRect(0, y_start - 2, 240, line_height);
+    // Special overlays for editing/QR
+    if (_editing_name) {
+        // Dark overlay
         _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        // Header bar (0, 0, 240, 28)
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        const char* title = "Change name";
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        // Input box (y: 40-70)
+        _display->drawRect(10, 40, 220, 30);
+        
+        // Show input with cursor
+        _display->setTextSize(2);
+        _display->setCursor(15, 47);
+        
+        // Show edit buffer with scrolling for long text (max ~20 chars visible at size 2)
+        char display_buf[32];
+        int max_visible = 20; // Characters that fit in input box at size 2
+        int visible_chars = min(max_visible, _edit_buffer_length);
+        int start = max(0, _edit_buffer_length - max_visible);
+        strncpy(display_buf, _edit_buffer + start, visible_chars);
+        display_buf[visible_chars] = '\0';
+        _display->print(display_buf);
+        
+        // Blinking cursor
+        if ((millis() / 350) % 2 == 0) {
+            int cursor_x = 15 + _display->getTextWidth(display_buf);
+            if (cursor_x < 225) {
+                _display->fillRect(cursor_x, 47, 3, 14);
+            }
+        }
+        
+        // Bottom bar with Save/Back
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        // Save tab (left half: 0-120)
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
+        
+        // Back tab (right half: 120-240)
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
+        
+        return; // Skip normal bottom bar
     }
-    _display->setCursor(10, y_start);
-    _display->print("Main: ");
-    _display->print(COLORS[_main_color_idx].name);
     
-    // Secondary Color setting
-    y_start += line_height + 5;
-    _display->setColor(DisplayDriver::LIGHT);
-    if (_settings_item_idx == 2) {
-        _display->fillRect(0, y_start - 2, 240, line_height);
-        _display->setColor(DisplayDriver::DARK);
+    if (_show_qr_code) {
+        // QR Code display - show device contact info in meshcore:// URI format
+        // Clear screen to black
+        M5.Display.fillScreen(0x0000);
+        
+        // Convert public key to hex string
+        char pub_key_hex[65]; // 32 bytes * 2 + null terminator
+        mesh::Utils::toHex(pub_key_hex, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+        pub_key_hex[64] = '\0';
+        
+        // Build meshcore:// URI with contact info
+        char qr_data[256];
+        const char* device_name = _node_prefs ? _node_prefs->node_name : "Device";
+        snprintf(qr_data, sizeof(qr_data), 
+                 "meshcore://contact/add?name=%s&public_key=%s&type=1",
+                 device_name, pub_key_hex);
+        
+        // Create QR code using custom M5GFX implementation
+        QRcode_M5GFX qrcode(&M5.Display);
+        qrcode.init();
+        
+        // Create and render QR code with full URI
+        qrcode.create(String(qr_data));
+        
+        return; // Skip bottom bar
     }
-    _display->setCursor(10, y_start);
-    _display->print("Secondary: ");
-    _display->print(COLORS[_secondary_color_idx].name);
     
-    // Bottom bar with Save/Back options (similar to Contacts/Channels)
+    // Don't show bottom bar in Device Info (any key press returns to menu)
+    if (_settings_category == SettingsCategory::DEVICE_INFO) {
+        return; // Skip bottom bar
+    }
+    
+    // Bottom bar with Save/Back options
     int bar_y = 108;
     _display->setColor(DisplayDriver::LIGHT);
     _display->drawRect(0, bar_y, 240, 27);
     
     _display->setTextSize(2);
     
-    // Save tab (left half: 0-120)
-    if (_settings_item_idx == -1 && _settings_menu_idx == 0) {
-        // Active - white fill, black text
-        _display->setColor(DisplayDriver::LIGHT);
-        _display->fillRect(0, bar_y, 120, 27);
-        _display->setColor(DisplayDriver::DARK);
-        _display->setCursor(35, bar_y + 7);
-        _display->print("Save");
-    } else {
-        // Inactive - white text only
-        _display->setColor(DisplayDriver::LIGHT);
-        _display->setCursor(35, bar_y + 7);
-        _display->print("Save");
+    // Save tab (left half: 0-120) - only show in Theme category
+    if (_settings_category == SettingsCategory::THEME) {
+        if (_settings_item_idx == -1 && _settings_menu_idx == 0) {
+            // Active - white fill, black text
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            // Inactive - white text only
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
     }
     
-    // Back tab (right half: 120-240)
-    if (_settings_item_idx == -1 && _settings_menu_idx == 1) {
-        // Active - white fill, black text
-        _display->setColor(DisplayDriver::LIGHT);
-        _display->fillRect(120, bar_y, 120, 27);
-        _display->setColor(DisplayDriver::DARK);
-        _display->setCursor(155, bar_y + 7);
-        _display->print("Back");
+    // Back tab (right half or full width if no Save)
+    if (_settings_category == SettingsCategory::THEME) {
+        // Right half
+        if (_settings_item_idx == -1 && _settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
     } else {
-        // Inactive - white text only
-        _display->setColor(DisplayDriver::LIGHT);
-        _display->setCursor(155, bar_y + 7);
-        _display->print("Back");
+        // Full width (no Save button)
+        if (_settings_item_idx == -1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 240, 27);
+            _display->setColor(DisplayDriver::DARK);
+            int back_width = _display->getTextWidth("Back");
+            int back_x = (240 - back_width) / 2;
+            _display->setCursor(back_x, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            int back_width = _display->getTextWidth("Back");
+            int back_x = (240 - back_width) / 2;
+            _display->setCursor(back_x, bar_y + 7);
+            _display->print("Back");
+        }
     }
 }
 
@@ -1101,6 +1718,148 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
         return;
     }
     
+    // In Settings editing mode (name editing)
+    if (_menu_state == MenuScreen::SETTINGS && _editing_name) {
+        // Check for navigation keys first
+        bool left = false, right = false, select = false;
+        for (auto key : status.word) {
+            if (key == ',') left = true;
+            if (key == '/') right = true;
+        }
+        // Only Enter triggers select (not space - space adds a space character)
+        if (status.enter) select = true;
+        
+        if (left || right) {
+            // Toggle between Save (0) and Back (1)
+            _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
+        } else if (select) {
+            if (_settings_menu_idx == 0) {
+                // Save name
+                if (_node_prefs) {
+                    strncpy(_node_prefs->node_name, _edit_buffer, 31);
+                    _node_prefs->node_name[31] = '\0';
+                    // Save NodePrefs to persistent storage
+                    the_mesh.savePrefs();
+                    _editing_name = false;
+                    _edit_buffer[0] = '\0';
+                    _edit_buffer_length = 0;
+                }
+            } else {
+                // Back - cancel editing
+                _editing_name = false;
+                _edit_buffer[0] = '\0';
+                _edit_buffer_length = 0;
+            }
+        } else if (status.fn) {
+            // Check for FN+` (escape)
+            bool has_backtick = false;
+            for (auto key : status.word) {
+                if (key == '`') has_backtick = true;
+            }
+            if (has_backtick) {
+                // Cancel editing
+                _editing_name = false;
+                _edit_buffer[0] = '\0';
+                _edit_buffer_length = 0;
+            }
+        } else if (status.opt) {
+            // Cancel editing
+            _editing_name = false;
+            _edit_buffer[0] = '\0';
+            _edit_buffer_length = 0;
+        } else if (status.del) {
+            // Backspace
+            if (_backspace_hold_start == 0) {
+                _backspace_hold_start = millis();
+                _backspace_was_held = false;
+            }
+            if (_edit_buffer_length > 0) {
+                _edit_buffer_length--;
+                _edit_buffer[_edit_buffer_length] = '\0';
+            }
+        } else {
+            // Reset backspace hold timer
+            _backspace_hold_start = 0;
+            _backspace_was_held = false;
+            
+            if (status.space) {
+                // Only allow space in name editing
+                if (_editing_name && _edit_buffer_length < 31) {
+                    _edit_buffer[_edit_buffer_length++] = ' ';
+                    _edit_buffer[_edit_buffer_length] = '\0';
+                }
+            } else {
+                for (auto key : status.word) {
+                    // Skip navigation keys
+                    if (key != ',' && key != '/' && key != ';' && key != '.') {
+                        if (_edit_buffer_length < 31) {
+                            _edit_buffer[_edit_buffer_length++] = key;
+                            _edit_buffer[_edit_buffer_length] = '\0';
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+    
+    // In Settings QR code display
+    if (_menu_state == MenuScreen::SETTINGS && _show_qr_code) {
+        // Any key closes QR code
+        _show_qr_code = false;
+        return;
+    }
+    
+    // In SETTINGS menu - handle ESC to go back
+    if (_menu_state == MenuScreen::SETTINGS) {
+        // Check for FN+` (escape) or OPT button
+        bool has_escape = false;
+        if (status.fn) {
+            for (auto key : status.word) {
+                if (key == '`') has_escape = true;
+            }
+        }
+        if (status.opt) has_escape = true;
+        
+        if (has_escape) {
+            if (_settings_category == SettingsCategory::MAIN_MENU) {
+                // Go back to contacts
+                _menu_state = MenuScreen::CONTACTS;
+                _settings_category = SettingsCategory::MAIN_MENU;
+                _settings_item_idx = 0;
+                _settings_scroll_pos = 0;
+                _settings_menu_idx = 0;
+            } else if (_settings_category == SettingsCategory::PUBLIC_INFO) {
+                // Go back to main settings menu
+                _settings_category = SettingsCategory::MAIN_MENU;
+                _settings_item_idx = 0;
+                _settings_scroll_pos = 0;
+                _public_info_scroll_pos = 0;
+                _settings_menu_idx = 0;
+            } else if (_settings_category == SettingsCategory::THEME) {
+                // Go back to main settings menu (don't save)
+                loadSettings();
+                _settings_category = SettingsCategory::MAIN_MENU;
+                _settings_item_idx = 0;
+                _settings_scroll_pos = 0;
+                _settings_menu_idx = 0;
+            } else if (_settings_category == SettingsCategory::RADIO_SETUP) {
+                // Go back to main settings menu
+                _settings_category = SettingsCategory::MAIN_MENU;
+                _settings_item_idx = 0;
+                _settings_scroll_pos = 0;
+                _settings_menu_idx = 0;
+            } else {
+                // Other categories - go back to main settings menu
+                _settings_category = SettingsCategory::MAIN_MENU;
+                _settings_item_idx = 0;
+                _settings_scroll_pos = 0;
+                _settings_menu_idx = 0;
+            }
+            return;
+        }
+    }
+    
     // In CONTACTS or CHANNELS menu - check for navigation first, then filter
     if (_menu_state == MenuScreen::CONTACTS || _menu_state == MenuScreen::CHANNELS) {
         // Check if this is navigation input (FN + keys or direct navigation keys)
@@ -1265,8 +2024,10 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 if (_settings_selected) {
                     // Open settings menu
                     _menu_state = MenuScreen::SETTINGS;
+                    _settings_category = SettingsCategory::MAIN_MENU;
                     _settings_menu_idx = 0;
-                    _settings_item_idx = 0; // Start on first setting
+                    _settings_item_idx = 0; // Start on first category
+                    _settings_scroll_pos = 0; // Reset scroll
                     _settings_selected = false;
                 } else if (num_contacts > 0) {
                     // Open chat with selected contact (use filtered index)
@@ -1385,8 +2146,10 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 if (_settings_selected) {
                     // Open settings menu
                     _menu_state = MenuScreen::SETTINGS;
+                    _settings_category = SettingsCategory::MAIN_MENU;
                     _settings_menu_idx = 0;
-                    _settings_item_idx = 0; // Start on first setting
+                    _settings_item_idx = 0; // Start on first category
+                    _settings_scroll_pos = 0; // Reset scroll
                     _settings_selected = false;
                 } else if (num_channels > 0) {
                     // Open chat with selected channel (use filtered index)
@@ -1413,84 +2176,337 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
         }
             
         case MenuScreen::SETTINGS: {
-            if (up || down) {
-                if (_settings_item_idx == -1) {
-                    // In bottom bar, go back to settings items
-                    _settings_item_idx = 2; // Start on Secondary Color (bottom item)
-                } else {
-                    // Navigate between settings items (0 = Brightness, 1 = Main Color, 2 = Secondary Color)
-                    if (up && _settings_item_idx > 0) {
-                        _settings_item_idx--;
-                    } else if (down && _settings_item_idx < 2) {
-                        _settings_item_idx++;
-                    } else if (down && _settings_item_idx == 2) {
-                        // Go down from Secondary Color to bottom bar
+            if (_settings_category == SettingsCategory::MAIN_MENU) {
+                // Main menu navigation with scrolling (5 categories, 3 visible)
+                int num_categories = 5;
+                
+                if (up || down) {
+                    if (_settings_item_idx == -1) {
+                        // In bottom bar, go back to category list (last item)
+                        _settings_item_idx = num_categories - 1;
+                        _settings_scroll_pos = (_settings_item_idx > 2) ? _settings_item_idx - 2 : 0;
+                    } else {
+                        // Navigate between categories with scrolling
+                        if (up && _settings_item_idx > 0) {
+                            _settings_item_idx--;
+                            if (_settings_item_idx < _settings_scroll_pos) {
+                                _settings_scroll_pos = _settings_item_idx;
+                            }
+                        } else if (down && _settings_item_idx < num_categories - 1) {
+                            _settings_item_idx++;
+                            if (_settings_item_idx >= _settings_scroll_pos + 3) {
+                                _settings_scroll_pos = _settings_item_idx - 2;
+                            }
+                        } else if (down && _settings_item_idx == num_categories - 1) {
+                            // Go down from last category to bottom bar
+                            _settings_item_idx = -1;
+                        } else if (up && _settings_item_idx == 0) {
+                            // Wrap to bottom bar
+                            _settings_item_idx = -1;
+                        } else if (down && _settings_item_idx == -1) {
+                            // Wrap from bottom bar back to first category
+                            _settings_item_idx = 0;
+                            _settings_scroll_pos = 0;
+                        }
+                    }
+                } else if (select) {
+                    if (_settings_item_idx >= 0) {
+                        // Enter selected category
+                        switch (_settings_item_idx) {
+                            case 0: _settings_category = SettingsCategory::THEME; break;
+                            case 1: _settings_category = SettingsCategory::PUBLIC_INFO; break;
+                            case 2: _settings_category = SettingsCategory::RADIO_SETUP; break;
+                            case 3: _settings_category = SettingsCategory::OTHER; break;
+                            case 4: _settings_category = SettingsCategory::DEVICE_INFO; break;
+                        }
+                        _settings_item_idx = 0;
+                        _settings_menu_idx = 0;
+                    } else {
+                        // Back button - return to contacts
+                        _menu_state = MenuScreen::CONTACTS;
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 0;
+                        _settings_menu_idx = 0;
+                    }
+                }
+                
+            } else if (_settings_category == SettingsCategory::THEME) {
+                // Theme category navigation
+                if (up || down) {
+                    if (_settings_item_idx == -1) {
+                        // In bottom bar, go back to settings items
+                        _settings_item_idx = 2; // Start on Secondary Color (bottom item)
+                    } else {
+                        // Navigate between settings items (0 = Brightness, 1 = Main Color, 2 = Secondary Color)
+                        if (up && _settings_item_idx > 0) {
+                            _settings_item_idx--;
+                        } else if (down && _settings_item_idx < 2) {
+                            _settings_item_idx++;
+                        } else if (down && _settings_item_idx == 2) {
+                            // Go down to bottom bar
+                            _settings_menu_idx = 0;
+                            _settings_item_idx = -1;
+                        } else if (up && _settings_item_idx == 0) {
+                            // Can't go up from Brightness
+                        }
+                    }
+                } else if (left || right) {
+                    if (_settings_item_idx == 0) {
+                        // Adjust brightness
+                        int step = 15; // ~6% steps
+                        if (left && _brightness > step) {
+                            _brightness -= step;
+                        } else if (left && _brightness <= step) {
+                            _brightness = 0;
+                        } else if (right && _brightness < (255 - step)) {
+                            _brightness += step;
+                        } else if (right) {
+                            _brightness = 255;
+                        }
+                        M5Cardputer.Display.setBrightness(_brightness);
+                    } else if (_settings_item_idx == 1) {
+                        // Change main color
+                        if (left && _main_color_idx > 0) {
+                            _main_color_idx--;
+                        } else if (left) {
+                            _main_color_idx = NUM_COLORS - 1;
+                        } else if (right && _main_color_idx < NUM_COLORS - 1) {
+                            _main_color_idx++;
+                        } else if (right) {
+                            _main_color_idx = 0;
+                        }
+                        applyTheme();
+                    } else if (_settings_item_idx == 2) {
+                        // Change secondary color
+                        if (left && _secondary_color_idx > 0) {
+                            _secondary_color_idx--;
+                        } else if (left) {
+                            _secondary_color_idx = NUM_COLORS - 1;
+                        } else if (right && _secondary_color_idx < NUM_COLORS - 1) {
+                            _secondary_color_idx++;
+                        } else if (right) {
+                            _secondary_color_idx = 0;
+                        }
+                        applyTheme();
+                    } else {
+                        // In bottom bar, toggle between Save (0) and Back (1)
+                        _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
+                    }
+                } else if (select) {
+                    if (_settings_item_idx >= 0) {
+                        // If on a setting item, Enter goes to bottom bar
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = -1;
+                    } else if (_settings_menu_idx == 0) {
+                        // Save - write to LittleFS and go back to main menu
+                        saveSettings();
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = 0;
+                    } else {
+                        // Back - don't save, return to main menu
+                        loadSettings();
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = 0;
+                    }
+                }
+                
+            } else if (_settings_category == SettingsCategory::PUBLIC_INFO) {
+                // Public Info navigation with scrolling (3 options, 3 visible)
+                int num_options = 3;
+                
+                if (up || down) {
+                    if (_settings_item_idx == -1) {
+                        // In bottom bar, go back to options
+                        _settings_item_idx = num_options - 1;
+                        _public_info_scroll_pos = (_settings_item_idx > 2) ? _settings_item_idx - 2 : 0;
+                    } else {
+                        // Navigate between options with scrolling
+                        if (up && _settings_item_idx > 0) {
+                            _settings_item_idx--;
+                            if (_settings_item_idx < _public_info_scroll_pos) {
+                                _public_info_scroll_pos = _settings_item_idx;
+                            }
+                        } else if (down && _settings_item_idx < num_options - 1) {
+                            _settings_item_idx++;
+                            if (_settings_item_idx >= _public_info_scroll_pos + 3) {
+                                _public_info_scroll_pos = _settings_item_idx - 2;
+                            }
+                        } else if (down && _settings_item_idx == num_options - 1) {
+                            // Go down to bottom bar
+                            _settings_item_idx = -1;
+                        } else if (up && _settings_item_idx == 0) {
+                            // Wrap to bottom bar
+                            _settings_item_idx = -1;
+                        }
+                    }
+                } else if (select) {
+                    if (_settings_item_idx >= 0) {
+                        // Handle option selection
+                        switch (_settings_item_idx) {
+                            case 0: // Change name
+                                _editing_name = true;
+                                _settings_menu_idx = 0; // Start on Save
+                                strncpy(_edit_buffer, _node_prefs->node_name, 31);
+                                _edit_buffer[31] = '\0';
+                                _edit_buffer_length = strlen(_edit_buffer);
+                                break;
+                            case 1: // Share key (QR code)
+                                _show_qr_code = true;
+                                break;
+                            case 2: // Toggle Share Position checkbox
+                                if (_node_prefs) {
+                                    _node_prefs->advert_loc_policy = 
+                                        (_node_prefs->advert_loc_policy == ADVERT_LOC_SHARE) ? 
+                                        ADVERT_LOC_NONE : ADVERT_LOC_SHARE;
+                                    // Save NodePrefs to persistent storage
+                                    the_mesh.savePrefs();
+                                }
+                                break;
+                        }
+                    } else {
+                        // Back button - return to main menu
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 0;
+                        _settings_menu_idx = 0;
+                        _public_info_scroll_pos = 0;
+                    }
+                }
+                
+            } else if (_settings_category == SettingsCategory::RADIO_SETUP) {
+#ifdef HAS_GPS
+                // Radio Setup navigation (1 option: GPS)
+                int num_options = 1;
+                
+                if (up || down) {
+                    if (_settings_item_idx == -1) {
+                        // In bottom bar, go back to options
+                        _settings_item_idx = 0;
+                    } else if (down && _settings_item_idx == 0) {
+                        // Go down to bottom bar
+                        _settings_item_idx = -1;
+                    } else if (up && _settings_item_idx == 0) {
+                        // Wrap to bottom bar
+                        _settings_item_idx = -1;
+                    }
+                } else if (select) {
+                    if (_settings_item_idx >= 0) {
+                        // Handle option selection
+                        switch (_settings_item_idx) {
+                            case 0: // Toggle GPS checkbox
+                                if (_node_prefs && _sensors) {
+                                    _node_prefs->gps_enabled = !_node_prefs->gps_enabled;
+                                    // Sync with actual GPS hardware
+                                    _sensors->setSettingValue("gps", _node_prefs->gps_enabled ? "1" : "0");
+                                    // Save NodePrefs to persistent storage
+                                    the_mesh.savePrefs();
+                                }
+                                break;
+                        }
+                    } else {
+                        // Back button - return to main menu
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 0;
+                        _settings_menu_idx = 0;
+                    }
+                }
+#else
+                // No GPS support - just Back button
+                if (select) {
+                    _settings_category = SettingsCategory::MAIN_MENU;
+                    _settings_item_idx = 0;
+                    _settings_menu_idx = 0;
+                }
+#endif
+                
+            } else if (_settings_category == SettingsCategory::OTHER) {
+                // Other settings navigation (like Theme - arrow keys change, Enter goes to bottom bar)
+                const uint16_t timeout_values[] = {10, 30, 60, 120, 300, 0}; // 10s, 30s, 1min, 2min, 5min, Never
+                
+                if (up || down) {
+                    if (_settings_item_idx == -1) {
+                        // In bottom bar, go back to Sleep option
+                        _settings_item_idx = 0;
+                    } else if (down) {
+                        // Go down to bottom bar
                         _settings_menu_idx = 0;
                         _settings_item_idx = -1;
                     } else if (up && _settings_item_idx == 0) {
-                        // Can't go up from Brightness
+                        // Can't go up from Sleep
                     }
-                }
-            } else if (left || right) {
-                if (_settings_item_idx == 0) {
-                    // Adjust brightness
-                    int step = 15; // ~6% steps
-                    if (left && _brightness > step) {
-                        _brightness -= step;
-                    } else if (left && _brightness <= step) {
-                        _brightness = 0;
-                    } else if (right && _brightness < (255 - step)) {
-                        _brightness += step;
-                    } else if (right) {
-                        _brightness = 255;
+                } else if (left || right) {
+                    if (_settings_item_idx == 0 && _node_prefs) {
+                        // Adjust sleep timeout with left/right arrows
+                        int current_idx = 4; // Default to 5min (300s)
+                        
+                        // Find current index
+                        for (int i = 0; i < 6; i++) {
+                            if (_node_prefs->screen_timeout_seconds == timeout_values[i]) {
+                                current_idx = i;
+                                break;
+                            }
+                        }
+                        
+                        // Change value
+                        if (left && current_idx > 0) {
+                            current_idx--;
+                        } else if (left && current_idx == 0) {
+                            current_idx = 5; // Wrap to Never
+                        } else if (right && current_idx < 5) {
+                            current_idx++;
+                        } else if (right && current_idx == 5) {
+                            current_idx = 0; // Wrap to 10s
+                        }
+                        
+                        // Apply new value
+                        _node_prefs->screen_timeout_seconds = timeout_values[current_idx];
+                        
+                        // Update runtime timeout
+                        if (_node_prefs->screen_timeout_seconds == 0) {
+                            _screen_timeout_millis = 0; // Never
+                        } else {
+                            _screen_timeout_millis = (unsigned long)_node_prefs->screen_timeout_seconds * 1000UL;
+                        }
+                        
+                        // Reset auto-off timer with new timeout
+                        if (_screen_timeout_millis > 0) {
+                            _auto_off = millis() + _screen_timeout_millis;
+                        } else {
+                            _auto_off = 0;
+                        }
+                        
+                        // Save to persistent storage immediately (like GPS setting)
+                        the_mesh.savePrefs();
+                        
+                        Serial.printf("[Screen] Timeout changed to %u seconds (saved to SPIFFS)\n", _node_prefs->screen_timeout_seconds);
+                    } else {
+                        // In bottom bar, toggle between Save (0) and Back (1)
+                        _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
                     }
-                    M5Cardputer.Display.setBrightness(_brightness);
-                } else if (_settings_item_idx == 1) {
-                    // Change main color
-                    if (left && _main_color_idx > 0) {
-                        _main_color_idx--;
-                    } else if (left) {
-                        _main_color_idx = NUM_COLORS - 1;
-                    } else if (right && _main_color_idx < NUM_COLORS - 1) {
-                        _main_color_idx++;
-                    } else if (right) {
-                        _main_color_idx = 0;
-                    }
-                    applyTheme();
-                } else if (_settings_item_idx == 2) {
-                    // Change secondary color
-                    if (left && _secondary_color_idx > 0) {
-                        _secondary_color_idx--;
-                    } else if (left) {
-                        _secondary_color_idx = NUM_COLORS - 1;
-                    } else if (right && _secondary_color_idx < NUM_COLORS - 1) {
-                        _secondary_color_idx++;
-                    } else if (right) {
-                        _secondary_color_idx = 0;
-                    }
-                    applyTheme();
-                } else {
-                    // In bottom bar, toggle between Save (0) and Back (1)
-                    _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
-                }
-            } else if (select) {
-                if (_settings_item_idx >= 0) {
-                    // If on a setting item, Enter goes to bottom bar
-                    _settings_menu_idx = 0;
-                    _settings_item_idx = -1;
-                } else if (_settings_menu_idx == 0) {
-                    // Save - write to LittleFS and go back
-                    saveSettings();
-                    _menu_state = MenuScreen::CONTACTS;
-                    _settings_menu_idx = 0;
-                    _settings_item_idx = 0;
-                } else {
-                    // Back - don't save, return to contacts
-                    // Reload settings to revert changes
-                    loadSettings();
-                    _menu_state = MenuScreen::CONTACTS;
+                } else if (select) {
+                    // Enter - return to main menu (changes are saved immediately)
+                    _settings_category = SettingsCategory::MAIN_MENU;
                     _settings_menu_idx = 0;
                     _settings_item_idx = 0;
+                }
+                
+            } else if (_settings_category == SettingsCategory::DEVICE_INFO) {
+                // Device Info - read-only, any key press returns to menu
+                if (up || down || left || right || select) {
+                    // Any key - back to main menu
+                    _settings_category = SettingsCategory::MAIN_MENU;
+                    _settings_item_idx = 0;
+                    _settings_menu_idx = 0;
+                }
+                
+            } else {
+                // Other categories (empty for now) - just Back button
+                if (select) {
+                    // Back to main menu
+                    _settings_category = SettingsCategory::MAIN_MENU;
+                    _settings_item_idx = 0;
+                    _settings_menu_idx = 0;
                 }
             }
             break;
@@ -1523,6 +2539,10 @@ void UITask::sendMessage() {
         uint32_t timeout = 0;
         the_mesh.sendMessage(_chat_contact, timestamp, 0, _input_buffer, expected_ack, timeout);
     }
+    
+    // NOTE: Don't sync outgoing messages to phone via BLE!
+    // Phone will receive them through mesh network naturally.
+    // Only sync RECEIVED messages (which happens automatically in MyMesh::queueMessage)
 }
 
 void UITask::addMessageToHistory(const char* from_name, const char* text, bool is_outgoing,
@@ -1677,15 +2697,25 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
             _notification_from[31] = '\0';
             strncpy(_notification_text, text, 127);
             _notification_text[127] = '\0';
-            _notification_expiry = millis() + 2000; // 2 seconds
+            _notification_expiry = millis() + 1500; // 1.5 seconds for battery optimization
             _has_notification = true;
             _need_refresh = true;
             
-            // Wake up display if off
+            // Wake up display if off or sleeping
+            if (_screen_sleeping) {
+                _screen_sleeping = false;
+                Serial.println("[Sleep] Waking from light sleep (new message)");
+            }
+            
             if (_display && !_display->isOn()) {
                 _display->turnOn();
+                Serial.println("[Screen] Display turned on (new message)");
             }
-            _auto_off = millis() + AUTO_OFF_MILLIS;
+            
+            // Reset screen timeout
+            if (_screen_timeout_millis > 0) {
+                _auto_off = millis() + _screen_timeout_millis;
+            }
         }
     }
     
@@ -1759,4 +2789,14 @@ void UITask::syncChatHistoryToBLE(int max_messages) {
     Serial.println("Chat history sync complete");
 }
 
-
+void UITask::enterLightSleep() {
+    // Light sleep mode is currently DISABLED because it was too aggressive:
+    // - Keyboard didn't wake the device reliably
+    // - LoRa packets were sometimes missed
+    // - Device became unresponsive after reboot
+    //
+    // Current approach: Only turn off display, keep CPU running normally
+    // This provides good battery life while maintaining full functionality
+    
+    Serial.println("[Sleep] Light sleep disabled - CPU stays active for reliable operation");
+}

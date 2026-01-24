@@ -20,6 +20,16 @@ enum class MenuScreen {
     SETTINGS
 };
 
+// Settings categories
+enum class SettingsCategory {
+    MAIN_MENU,      // Main settings menu with categories
+    THEME,          // Brightness, Main Color, Secondary Color
+    PUBLIC_INFO,    // Public user info
+    RADIO_SETUP,    // Radio configuration
+    OTHER,          // Other settings
+    DEVICE_INFO     // Device information
+};
+
 // Message structure for chat history
 struct ChatMessage {
     char text[128];
@@ -70,6 +80,8 @@ private:
     
     unsigned long _next_refresh;
     unsigned long _auto_off;
+    unsigned long _screen_timeout_millis;  // Current screen timeout in ms
+    bool _screen_sleeping;  // True when in light sleep mode
     bool _need_refresh;
     char _alert[128];
     unsigned long _alert_expiry;
@@ -92,11 +104,21 @@ private:
     // Backspace hold tracking
     unsigned long _backspace_hold_start;
     bool _backspace_was_held;
+    unsigned long _last_backspace_delete; // For fast repeat deletion
     
     // Settings icon selection
     bool _settings_selected;
+    SettingsCategory _settings_category; // Current settings category
     int _settings_menu_idx; // 0 = Save, 1 = Back
-    int _settings_item_idx; // Selected setting item (0 = Brightness, 1 = Main Color, 2 = Secondary Color)
+    int _settings_item_idx; // Selected setting item (-1 = bottom menu, 0+ = items in category)
+    int _settings_scroll_pos; // Scroll position for settings categories
+    int _public_info_scroll_pos; // Scroll position for Public Info options
+    
+    // Public Info editing state
+    bool _editing_name;
+    bool _show_qr_code;
+    char _edit_buffer[64]; // For editing name
+    int _edit_buffer_length;
     
     // Settings values
     uint8_t _brightness; // 0-255
@@ -150,6 +172,7 @@ public:
     
     // Chat history synchronization for BLE
     void syncChatHistoryToBLE(int max_messages = 10);
+    void enterLightSleep();  // Power management: light sleep mode
     
     void showAlert(const char* msg);
     void gotoScreen(MenuScreen screen);

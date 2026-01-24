@@ -807,6 +807,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.bw = LORA_BW;
   _prefs.cr = LORA_CR;
   _prefs.tx_power_dbm = LORA_TX_POWER;
+  _prefs.screen_timeout_seconds = 300; // 5 minutes default
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed
 }
 

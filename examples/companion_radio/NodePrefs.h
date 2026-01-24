@@ -25,4 +25,6 @@ struct NodePrefs {  // persisted to file
   uint32_t ble_pin;
   uint8_t  advert_loc_policy;
   uint8_t  buzzer_quiet;
+  uint8_t  gps_enabled;
+  uint16_t screen_timeout_seconds;  // 0=Never, 10, 30, 60, 120, 300
 };

@@ -239,21 +239,26 @@ void loop() {
     Serial.println("Button G0 pressed - sending advertisement!");
     the_mesh.advert();
     
-    // Show notification on display - FULL SCREEN BLACK
+    // Show notification on display
     display.startFrame();
     display.setColor(DisplayDriver::DARK);
-    display.fillRect(0, 0, display.width(), display.height());
+    display.fillRect(0, 0, display.width(), display.height());  // Black background
+    
     display.setColor(DisplayDriver::LIGHT);
     display.setTextSize(2);
     display.drawTextCentered(display.width() / 2, display.height() / 2, "Advert sent");
     display.endFrame();
     
-    delay(1500);  // Show for 1.5 seconds - BLOCKS EVERYTHING
+    delay(1500);  // Show for 1.5 seconds
     
-    // DON'T call ui_task.loop() here - it will happen naturally after delay
+    // Clear notification
+    display.startFrame();
+    display.setColor(DisplayDriver::DARK);
+    display.fillRect(0, 0, display.width(), display.height());
+    display.endFrame();
   }
   
-  ui_task.loop();  // Always call this - restores previous screen after delay
+  ui_task.loop();  // UI refresh after button handling
 #endif
   rtc_clock.tick();
 }

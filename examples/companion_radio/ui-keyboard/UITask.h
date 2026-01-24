@@ -27,8 +27,37 @@ enum class SettingsCategory {
     PUBLIC_INFO,    // Public user info
     RADIO_SETUP,    // Radio configuration
     OTHER,          // Other settings
-    DEVICE_INFO     // Device information
+    DEVICE_INFO,    // Device information
+    RADIO_PRESET    // Radio preset selection
 };
+
+// Radio preset structure
+struct RadioPreset {
+    const char* name;
+    float freq_mhz;
+    uint8_t sf;
+    float bw_khz;
+    uint8_t cr;
+};
+
+// Radio presets list
+static const RadioPreset RADIO_PRESETS[] = {
+    {"New Zealand", 917.375f, 11, 250.0f, 5},
+    {"New Zealand (Narrow)", 917.375f, 7, 62.5f, 5},
+    {"Portugal 868", 869.618f, 7, 62.5f, 6},
+    {"Switzerland", 869.618f, 8, 62.5f, 8},
+    {"USA / Canada (Rec.)", 910.525f, 7, 62.5f, 5},
+    {"Vietnam", 920.250f, 11, 250.0f, 5},
+    {"Australia", 915.800f, 10, 250.0f, 5},
+    {"Australia (Narrow)", 916.575f, 7, 62.5f, 8},
+    {"Australia: SA, WA", 923.125f, 8, 62.5f, 8},
+    {"Australia: QLD", 923.125f, 8, 62.5f, 5},
+    {"EU / UK (Narrow)", 869.618f, 8, 62.5f, 8},
+    {"EU / UK (Long Range)", 869.525f, 11, 250.0f, 5},
+    {"EU / UK (Med Range)", 869.525f, 10, 250.0f, 5},
+    {"Czech Rep (Narrow)", 869.432f, 7, 62.5f, 5}
+};
+#define NUM_RADIO_PRESETS 14
 
 // Message structure for chat history
 struct ChatMessage {
@@ -113,12 +142,22 @@ private:
     int _settings_item_idx; // Selected setting item (-1 = bottom menu, 0+ = items in category)
     int _settings_scroll_pos; // Scroll position for settings categories
     int _public_info_scroll_pos; // Scroll position for Public Info options
+    int _radio_preset_scroll_pos; // Scroll position for Radio Preset list
+    int _radio_setup_scroll_pos; // Scroll position for Radio Setup list
     
     // Public Info editing state
     bool _editing_name;
     bool _show_qr_code;
-    char _edit_buffer[64]; // For editing name
+    char _edit_buffer[64]; // For editing name/radio params
     int _edit_buffer_length;
+    
+    // Radio parameter editing state
+    bool _editing_frequency;
+    bool _editing_bandwidth;
+    bool _editing_spreading_factor;
+    bool _editing_coding_rate;
+    bool _editing_tx_power;
+    int _manual_setup_step; // 0=frequency, 1=bandwidth, 2=SF, 3=CR, 4=TX power, -1=not in manual setup
     
     // Settings values
     uint8_t _brightness; // 0-255

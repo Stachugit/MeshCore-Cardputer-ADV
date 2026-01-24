@@ -55,8 +55,9 @@ UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
       _chat_history_count(0), _chat_scroll(0), _notification_expiry(0), _has_notification(false),
       _chat_msg_scroll_index(0), _search_filter_length(0), _backspace_hold_start(0), _backspace_was_held(false),
       _last_backspace_delete(0),
-      _settings_selected(false), _settings_category(SettingsCategory::MAIN_MENU), _settings_menu_idx(0), _settings_item_idx(0), _settings_scroll_pos(0), _public_info_scroll_pos(0),
+      _settings_selected(false), _settings_category(SettingsCategory::MAIN_MENU), _settings_menu_idx(0), _settings_item_idx(0), _settings_scroll_pos(0), _public_info_scroll_pos(0), _radio_preset_scroll_pos(0), _radio_setup_scroll_pos(0),
       _editing_name(false), _show_qr_code(false), _edit_buffer_length(0),
+      _editing_frequency(false), _editing_bandwidth(false), _editing_spreading_factor(false), _editing_coding_rate(false), _editing_tx_power(false), _manual_setup_step(-1),
       _brightness(128), _main_color_idx(0), _secondary_color_idx(1) {
     _alert[0] = '\0';
     _input_buffer[0] = '\0';
@@ -200,6 +201,10 @@ void UITask::loop() {
                     _selected_idx = 0;
                     _need_refresh = true;
                 } else if (_menu_state == MenuScreen::SETTINGS && _editing_name && _edit_buffer_length > 0) {
+                    _edit_buffer_length--;
+                    _edit_buffer[_edit_buffer_length] = '\0';
+                    _need_refresh = true;
+                } else if (_menu_state == MenuScreen::SETTINGS && (_editing_frequency || _editing_bandwidth || _editing_spreading_factor || _editing_coding_rate || _editing_tx_power) && _edit_buffer_length > 0) {
                     _edit_buffer_length--;
                     _edit_buffer[_edit_buffer_length] = '\0';
                     _need_refresh = true;
@@ -1114,24 +1119,25 @@ void UITask::renderSettingsMenu() {
         _display->setCursor(67, 7);
         _display->print("Radio Setup");
         
-        // Show Radio Setup options
+        // Show Radio Setup options with scrolling (up to 3 options)
 #ifdef HAS_GPS
-        const char* options[] = {"GPS"};
-        int num_options = 1;
+        const char* options[] = {"GPS", "Choose preset", "Manual setup"};
+        int num_options = 3;
 #else
-        // No GPS support, show empty
-        _display->setTextSize(1);
-        _display->setColor(DisplayDriver::LIGHT);
-        _display->setCursor(70, 60);
-        _display->print("(Empty)");
-        return;
+        const char* options[] = {"Choose preset", "Manual setup"};
+        int num_options = 2;
 #endif
+        
+        // Constrain scroll position
+        if (_radio_setup_scroll_pos > num_options - 3) {
+            _radio_setup_scroll_pos = max(0, num_options - 3);
+        }
         
         // Render option items (y: 27, 54, 81)
         int y_positions[3] = {27, 54, 81};
         
-        for (int i = 0; i < min(3, num_options); i++) {
-            int option_idx = i;
+        for (int i = 0; i < 3; i++) {
+            int option_idx = _radio_setup_scroll_pos + i;
             if (option_idx >= num_options) break;
             
             int y = y_positions[i];
@@ -1156,8 +1162,12 @@ void UITask::renderSettingsMenu() {
             _display->setCursor(16, y + 6);
             _display->print(options[option_idx]);
             
-            // Show checkbox for GPS option
+            // Show checkbox for GPS option (index 0 if HAS_GPS)
+#ifdef HAS_GPS
             if (option_idx == 0) {
+#else
+            if (false) { // No GPS, no checkbox
+#endif
                 int checkbox_x = 200;
                 int checkbox_y = y + 7;
                 // Restore proper color for checkbox
@@ -1173,6 +1183,22 @@ void UITask::renderSettingsMenu() {
                     _display->fillRect(checkbox_x + 2, checkbox_y + 2, 10, 10);
                 }
             }
+            
+            // No current values shown for Manual setup option
+        }
+        
+        // Scroll indicators
+        _display->setTextSize(1);
+        _display->setColor(DisplayDriver::LIGHT);
+        if (_radio_setup_scroll_pos > 0) {
+            // Up arrow
+            _display->setCursor(117, 112);
+            _display->print("^");
+        }
+        if (_radio_setup_scroll_pos < num_options - 3) {
+            // Down arrow
+            _display->setCursor(117, 120);
+            _display->print("v");
         }
         
     } else if (_settings_category == SettingsCategory::OTHER) {
@@ -1220,6 +1246,54 @@ void UITask::renderSettingsMenu() {
         
         if (_settings_item_idx == 0) {
             _display->print(" >");
+        }
+        
+    } else if (_settings_category == SettingsCategory::RADIO_PRESET) {
+        _display->setCursor(50, 7);
+        _display->print("Choose Preset");
+        
+        // Show preset list (3 visible items with scrolling)
+        int y_positions[3] = {27, 54, 81};
+        
+        for (int i = 0; i < 3; i++) {
+            int preset_idx = _radio_preset_scroll_pos + i;
+            if (preset_idx >= NUM_RADIO_PRESETS) break;
+            
+            int y = y_positions[i];
+            
+            // Draw border
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->drawRect(0, y, 240, 28);
+            
+            // Fill white if selected
+            if (preset_idx == _settings_item_idx) {
+                _display->fillRect(0, y, 240, 28);
+                _display->setColor(DisplayDriver::DARK);
+                _display->setCursor(2, y + 7);
+                _display->setTextSize(2);
+                _display->print(">");
+            } else {
+                _display->setColor(DisplayDriver::LIGHT);
+            }
+            
+            // Display preset name
+            _display->setTextSize(2);
+            _display->setCursor(16, y + 6);
+            _display->print(RADIO_PRESETS[preset_idx].name);
+        }
+        
+        // Show preset details at bottom (for currently selected)
+        if (_settings_item_idx >= 0 && _settings_item_idx < NUM_RADIO_PRESETS) {
+            _display->setTextSize(1);
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(5, 113);
+            char details[64];
+            snprintf(details, sizeof(details), "%.3f MHz SF%u BW%.1f CR%u",
+                RADIO_PRESETS[_settings_item_idx].freq_mhz,
+                RADIO_PRESETS[_settings_item_idx].sf,
+                RADIO_PRESETS[_settings_item_idx].bw_khz,
+                RADIO_PRESETS[_settings_item_idx].cr);
+            _display->print(details);
         }
         
     } else if (_settings_category == SettingsCategory::DEVICE_INFO) {
@@ -1294,7 +1368,7 @@ void UITask::renderSettingsMenu() {
             _display->setCursor(5, y);
             _display->print("Freq: ");
             char freq_str[16];
-            snprintf(freq_str, sizeof(freq_str), "%.3f", _node_prefs->freq / 1000000.0);
+            snprintf(freq_str, sizeof(freq_str), "%.3f", _node_prefs->freq);
             _display->print(freq_str);
             _display->print(" MHz");
             y += line_height;
@@ -1422,6 +1496,344 @@ void UITask::renderSettingsMenu() {
         }
         
         return; // Skip normal bottom bar
+    }
+    
+    // Editing overlays for radio parameters
+    if (_editing_frequency) {
+        _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        // Show progress if in manual setup mode
+        char title[32];
+        if (_manual_setup_step >= 0) {
+            snprintf(title, sizeof(title), "1/5: Frequency");
+        } else {
+            snprintf(title, sizeof(title), "Frequency (MHz)");
+        }
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        _display->drawRect(10, 40, 220, 30);
+        
+        _display->setTextSize(2);
+        _display->setCursor(15, 47);
+        _display->print(_edit_buffer);
+        
+        if ((millis() / 350) % 2 == 0) {
+            int cursor_x = 15 + _display->getTextWidth(_edit_buffer);
+            if (cursor_x < 225) {
+                _display->fillRect(cursor_x, 47, 3, 14);
+            }
+        }
+        
+        
+        // Bottom bar with Save/Back
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
+        
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
+        
+        return;
+    }
+    
+    if (_editing_bandwidth) {
+        _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        // Show progress if in manual setup mode
+        char title[32];
+        if (_manual_setup_step >= 0) {
+            snprintf(title, sizeof(title), "2/5: Bandwidth");
+        } else {
+            snprintf(title, sizeof(title), "Bandwidth (kHz)");
+        }
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        _display->drawRect(10, 40, 220, 30);
+        
+        _display->setTextSize(2);
+        _display->setCursor(15, 47);
+        _display->print(_edit_buffer);
+        
+        if ((millis() / 350) % 2 == 0) {
+            int cursor_x = 15 + _display->getTextWidth(_edit_buffer);
+            if (cursor_x < 225) {
+                _display->fillRect(cursor_x, 47, 3, 14);
+            }
+        }
+        
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
+        
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
+        
+        return;
+    }
+    
+    if (_editing_spreading_factor) {
+        _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        // Show progress if in manual setup mode
+        char title[32];
+        if (_manual_setup_step >= 0) {
+            snprintf(title, sizeof(title), "3/5: SF");
+        } else {
+            snprintf(title, sizeof(title), "Spreading Factor");
+        }
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        _display->drawRect(10, 40, 220, 30);
+        
+        _display->setTextSize(2);
+        _display->setCursor(15, 47);
+        _display->print(_edit_buffer);
+        
+        if ((millis() / 350) % 2 == 0) {
+            int cursor_x = 15 + _display->getTextWidth(_edit_buffer);
+            if (cursor_x < 225) {
+                _display->fillRect(cursor_x, 47, 3, 14);
+            }
+        }
+        
+    
+        
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
+        
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
+        
+        return;
+    }
+    
+    if (_editing_coding_rate) {
+        _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        // Show progress if in manual setup mode
+        char title[32];
+        if (_manual_setup_step >= 0) {
+            snprintf(title, sizeof(title), "4/5: CR");
+        } else {
+            snprintf(title, sizeof(title), "Coding Rate");
+        }
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        _display->drawRect(10, 40, 220, 30);
+        
+        _display->setTextSize(2);
+        _display->setCursor(15, 47);
+        _display->print(_edit_buffer);
+        
+        if ((millis() / 350) % 2 == 0) {
+            int cursor_x = 15 + _display->getTextWidth(_edit_buffer);
+            if (cursor_x < 225) {
+                _display->fillRect(cursor_x, 47, 3, 14);
+            }
+        }
+        
+    
+        
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
+        
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
+        
+        return;
+    }
+    
+    if (_editing_tx_power) {
+        _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        // Show progress if in manual setup mode
+        char title[32];
+        if (_manual_setup_step >= 0) {
+            snprintf(title, sizeof(title), "5/5: TX Power");
+        } else {
+            snprintf(title, sizeof(title), "TX Power (dBm)");
+        }
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        _display->drawRect(10, 40, 220, 30);
+        
+        _display->setTextSize(2);
+        _display->setCursor(15, 47);
+        _display->print(_edit_buffer);
+        
+        if ((millis() / 350) % 2 == 0) {
+            int cursor_x = 15 + _display->getTextWidth(_edit_buffer);
+            if (cursor_x < 225) {
+                _display->fillRect(cursor_x, 47, 3, 14);
+            }
+        }
+        
+        
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(35, bar_y + 7);
+            _display->print("Save");
+        }
+        
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(155, bar_y + 7);
+            _display->print("Back");
+        }
+        
+        return;
     }
     
     if (_show_qr_code) {
@@ -1796,6 +2208,254 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
                             _edit_buffer[_edit_buffer_length++] = key;
                             _edit_buffer[_edit_buffer_length] = '\0';
                         }
+                    }
+                }
+            }
+        }
+        return;
+    }
+    
+    // In Settings editing radio parameters (frequency, bandwidth, SF, CR, TX power)
+    if (_menu_state == MenuScreen::SETTINGS && (_editing_frequency || _editing_bandwidth || _editing_spreading_factor || _editing_coding_rate || _editing_tx_power)) {
+        // Check for navigation keys
+        bool left = false, right = false, select = false;
+        for (auto key : status.word) {
+            if (key == ',') left = true;
+            if (key == '/') right = true;
+        }
+        if (status.enter) select = true;
+        
+        if (left || right) {
+            // Toggle between Save (0) and Back (1)
+            _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
+        } else if (select) {
+            if (_settings_menu_idx == 0) {
+                // Save parameter
+                bool valid = false;
+                bool restart_needed = false;
+                
+                if (_editing_frequency) {
+                    float freq = atof(_edit_buffer);
+                    if (freq >= 400.0f && freq <= 2500.0f) {
+                        _node_prefs->freq = freq;
+                        valid = true;
+                        restart_needed = true;
+                    } else {
+                        strncpy(_notification_text, "Invalid frequency", 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 2000;
+                        _has_notification = true;
+                    }
+                } else if (_editing_bandwidth) {
+                    float bw = atof(_edit_buffer);
+                    if (bw >= 7.8f && bw <= 500.0f) {
+                        _node_prefs->bw = bw;
+                        valid = true;
+                        restart_needed = true;
+                    } else {
+                        strncpy(_notification_text, "Invalid bandwidth", 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 2000;
+                        _has_notification = true;
+                    }
+                } else if (_editing_spreading_factor) {
+                    int sf = atoi(_edit_buffer);
+                    if (sf >= 5 && sf <= 12) {
+                        _node_prefs->sf = (uint8_t)sf;
+                        valid = true;
+                        restart_needed = true;
+                    } else {
+                        strncpy(_notification_text, "Invalid SF", 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 2000;
+                        _has_notification = true;
+                    }
+                } else if (_editing_coding_rate) {
+                    int cr = atoi(_edit_buffer);
+                    if (cr >= 5 && cr <= 8) {
+                        _node_prefs->cr = (uint8_t)cr;
+                        valid = true;
+                        restart_needed = true;
+                    } else {
+                        strncpy(_notification_text, "Invalid CR", 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 2000;
+                        _has_notification = true;
+                    }
+                } else if (_editing_tx_power) {
+                    int power = atoi(_edit_buffer);
+                    if (power >= 1 && power <= 22) {
+                        _node_prefs->tx_power_dbm = (uint8_t)power;
+                        valid = true;
+                        restart_needed = true;
+                    } else {
+                        strncpy(_notification_text, "Invalid TX power", 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 2000;
+                        _has_notification = true;
+                    }
+                }
+                
+                if (valid) {
+                    // Check if we're in manual setup mode
+                    if (_manual_setup_step >= 0) {
+                        // Manual setup mode - proceed to next parameter
+                        _manual_setup_step++;
+                        
+                        // Close current editor
+                        _editing_frequency = false;
+                        _editing_bandwidth = false;
+                        _editing_spreading_factor = false;
+                        _editing_coding_rate = false;
+                        _editing_tx_power = false;
+                        _edit_buffer[0] = '\0';
+                        _edit_buffer_length = 0;
+                        
+                        // Open next parameter editor
+                        if (_manual_setup_step == 1) {
+                            // Bandwidth
+                            _editing_bandwidth = true;
+                            _edit_buffer_length = snprintf(_edit_buffer, sizeof(_edit_buffer), "%.1f", _node_prefs->bw);
+                            _settings_menu_idx = 0;
+                        } else if (_manual_setup_step == 2) {
+                            // Spreading Factor
+                            _editing_spreading_factor = true;
+                            _edit_buffer_length = snprintf(_edit_buffer, sizeof(_edit_buffer), "%d", _node_prefs->sf);
+                            _settings_menu_idx = 0;
+                        } else if (_manual_setup_step == 3) {
+                            // Coding Rate
+                            _editing_coding_rate = true;
+                            _edit_buffer_length = snprintf(_edit_buffer, sizeof(_edit_buffer), "%d", _node_prefs->cr);
+                            _settings_menu_idx = 0;
+                        } else if (_manual_setup_step == 4) {
+                            // TX Power
+                            _editing_tx_power = true;
+                            _edit_buffer_length = snprintf(_edit_buffer, sizeof(_edit_buffer), "%d", _node_prefs->tx_power_dbm);
+                            _settings_menu_idx = 0;
+                        } else {
+                            // Finished all parameters - save and restart
+                            _manual_setup_step = -1;
+                            the_mesh.savePrefs();
+                            
+                            strncpy(_notification_text, "Restarting", 127);
+                            _notification_text[127] = '\0';
+                            _notification_expiry = millis() + 2000;
+                            _has_notification = true;
+                            // Force render notification
+                            _display->startFrame();
+                            renderSettingsMenu();
+                            renderNotification();
+                            _display->endFrame();
+                            delay(2000);
+                            ESP.restart();
+                        }
+                    } else {
+                        // Not in manual setup - save and restart immediately (shouldn't happen now)
+                        the_mesh.savePrefs();
+                        _editing_frequency = false;
+                        _editing_bandwidth = false;
+                        _editing_spreading_factor = false;
+                        _editing_coding_rate = false;
+                        _editing_tx_power = false;
+                        _edit_buffer[0] = '\0';
+                        _edit_buffer_length = 0;
+                        
+                        if (restart_needed) {
+                            strncpy(_notification_text, "Restarting", 127);
+                            _notification_text[127] = '\0';
+                            _notification_expiry = millis() + 2000;
+                            _has_notification = true;
+                            // Force render notification
+                            _display->startFrame();
+                            renderSettingsMenu();
+                            renderNotification();
+                            _display->endFrame();
+                            delay(2000);
+                            ESP.restart();
+                        }
+                    }
+                }
+            } else {
+                // Back - cancel editing and exit manual setup
+                _editing_frequency = false;
+                _editing_bandwidth = false;
+                _editing_spreading_factor = false;
+                _editing_coding_rate = false;
+                _editing_tx_power = false;
+                _edit_buffer[0] = '\0';
+                _edit_buffer_length = 0;
+                _manual_setup_step = -1;
+            }
+        } else if (status.fn) {
+            // Check for FN+` (escape)
+            bool has_backtick = false;
+            for (auto key : status.word) {
+                if (key == '`') has_backtick = true;
+            }
+            if (has_backtick) {
+                // Cancel editing and exit manual setup
+                _editing_frequency = false;
+                _editing_bandwidth = false;
+                _editing_spreading_factor = false;
+                _editing_coding_rate = false;
+                _editing_tx_power = false;
+                _edit_buffer[0] = '\0';
+                _edit_buffer_length = 0;
+                _manual_setup_step = -1;
+            }
+        } else if (status.opt) {
+            // Cancel editing and exit manual setup
+            _editing_frequency = false;
+            _editing_bandwidth = false;
+            _editing_spreading_factor = false;
+            _editing_coding_rate = false;
+            _editing_tx_power = false;
+            _edit_buffer[0] = '\0';
+            _edit_buffer_length = 0;
+            _manual_setup_step = -1;
+        } else if (status.del) {
+            // Backspace
+            if (_backspace_hold_start == 0) {
+                _backspace_hold_start = millis();
+                _backspace_was_held = false;
+            }
+            if (_edit_buffer_length > 0) {
+                _edit_buffer_length--;
+                _edit_buffer[_edit_buffer_length] = '\0';
+            }
+        } else {
+            // Reset backspace hold timer
+            _backspace_hold_start = 0;
+            _backspace_was_held = false;
+            
+            // Allow only digits and decimal point for frequency/bandwidth
+            for (auto key : status.word) {
+                // Skip navigation keys
+                if (key != ',' && key != '/' && key != ';' && key != '.') {
+                    bool allow_char = false;
+                    
+                    // Digits always allowed
+                    if (key >= '0' && key <= '9') {
+                        allow_char = true;
+                    }
+                    // Decimal point only for frequency and bandwidth
+                    else if (key == '.' && (_editing_frequency || _editing_bandwidth)) {
+                        // Check if there's already a decimal point
+                        bool has_decimal = false;
+                        for (int i = 0; i < _edit_buffer_length; i++) {
+                            if (_edit_buffer[i] == '.') {
+                                has_decimal = true;
+                                break;
+                            }
+                        }
+                        if (!has_decimal) {
+                            allow_char = true;
+                        }
+                    }
+                    
+                    if (allow_char && _edit_buffer_length < 15) {
+                        _edit_buffer[_edit_buffer_length++] = key;
+                        _edit_buffer[_edit_buffer_length] = '\0';
                     }
                 }
             }
@@ -2376,34 +3036,78 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 
             } else if (_settings_category == SettingsCategory::RADIO_SETUP) {
 #ifdef HAS_GPS
-                // Radio Setup navigation (1 option: GPS)
-                int num_options = 1;
+                // Radio Setup navigation (3 options: GPS, Choose preset, Manual setup)
+                int num_options = 3;
+#else
+                // Radio Setup navigation (2 options: Choose preset, Manual setup)
+                int num_options = 2;
+#endif
                 
                 if (up || down) {
                     if (_settings_item_idx == -1) {
                         // In bottom bar, go back to options
-                        _settings_item_idx = 0;
-                    } else if (down && _settings_item_idx == 0) {
-                        // Go down to bottom bar
-                        _settings_item_idx = -1;
-                    } else if (up && _settings_item_idx == 0) {
-                        // Wrap to bottom bar
-                        _settings_item_idx = -1;
+                        _settings_item_idx = num_options - 1;
+                        // Adjust scroll position
+                        if (_settings_item_idx >= 3) {
+                            _radio_setup_scroll_pos = _settings_item_idx - 2;
+                        }
+                    } else {
+                        // Navigate between options with scrolling
+                        if (up && _settings_item_idx > 0) {
+                            _settings_item_idx--;
+                            if (_settings_item_idx < _radio_setup_scroll_pos) {
+                                _radio_setup_scroll_pos = _settings_item_idx;
+                            }
+                        } else if (down && _settings_item_idx < num_options - 1) {
+                            _settings_item_idx++;
+                            if (_settings_item_idx >= _radio_setup_scroll_pos + 3) {
+                                _radio_setup_scroll_pos = _settings_item_idx - 2;
+                            }
+                        } else if (down && _settings_item_idx == num_options - 1) {
+                            // Go down to bottom bar
+                            _settings_item_idx = -1;
+                        } else if (up && _settings_item_idx == 0) {
+                            // Wrap to bottom bar
+                            _settings_item_idx = -1;
+                        }
                     }
                 } else if (select) {
                     if (_settings_item_idx >= 0) {
                         // Handle option selection
-                        switch (_settings_item_idx) {
-                            case 0: // Toggle GPS checkbox
-                                if (_node_prefs && _sensors) {
-                                    _node_prefs->gps_enabled = !_node_prefs->gps_enabled;
-                                    // Sync with actual GPS hardware
-                                    _sensors->setSettingValue("gps", _node_prefs->gps_enabled ? "1" : "0");
-                                    // Save NodePrefs to persistent storage
-                                    the_mesh.savePrefs();
-                                }
-                                break;
+#ifdef HAS_GPS
+                        if (_settings_item_idx == 0) {
+                            // Toggle GPS checkbox
+                            if (_node_prefs && _sensors) {
+                                _node_prefs->gps_enabled = !_node_prefs->gps_enabled;
+                                _sensors->setSettingValue("gps", _node_prefs->gps_enabled ? "1" : "0");
+                                the_mesh.savePrefs();
+                            }
+                        } else if (_settings_item_idx == 1) {
+                            // Choose preset
+                            _settings_category = SettingsCategory::RADIO_PRESET;
+                            _settings_item_idx = 0;
+                            _radio_preset_scroll_pos = 0;
+                        } else if (_settings_item_idx == 2) {
+                            // Manual setup - start with frequency
+                            _manual_setup_step = 0;
+                            _editing_frequency = true;
+                            _edit_buffer_length = snprintf(_edit_buffer, sizeof(_edit_buffer), "%.2f", _node_prefs->freq);
+                            _settings_menu_idx = 0;
                         }
+#else
+                        if (_settings_item_idx == 0) {
+                            // Choose preset
+                            _settings_category = SettingsCategory::RADIO_PRESET;
+                            _settings_item_idx = 0;
+                            _radio_preset_scroll_pos = 0;
+                        } else if (_settings_item_idx == 1) {
+                            // Manual setup - start with frequency
+                            _manual_setup_step = 0;
+                            _editing_frequency = true;
+                            _edit_buffer_length = snprintf(_edit_buffer, sizeof(_edit_buffer), "%.2f", _node_prefs->freq);
+                            _settings_menu_idx = 0;
+                        }
+#endif
                     } else {
                         // Back button - return to main menu
                         _settings_category = SettingsCategory::MAIN_MENU;
@@ -2411,14 +3115,82 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                         _settings_menu_idx = 0;
                     }
                 }
-#else
-                // No GPS support - just Back button
-                if (select) {
-                    _settings_category = SettingsCategory::MAIN_MENU;
-                    _settings_item_idx = 0;
-                    _settings_menu_idx = 0;
+                
+            } else if (_settings_category == SettingsCategory::RADIO_PRESET) {
+                // Radio Preset selection (14 presets with scrolling)
+                int num_presets = NUM_RADIO_PRESETS;
+                
+                if (up || down) {
+                    if (_settings_item_idx == -1) {
+                        // In bottom bar, go back to presets
+                        _settings_item_idx = num_presets - 1;
+                        _radio_preset_scroll_pos = (_settings_item_idx > 2) ? _settings_item_idx - 2 : 0;
+                    } else {
+                        // Navigate between presets with scrolling
+                        if (up && _settings_item_idx > 0) {
+                            _settings_item_idx--;
+                            if (_settings_item_idx < _radio_preset_scroll_pos) {
+                                _radio_preset_scroll_pos = _settings_item_idx;
+                            }
+                        } else if (down && _settings_item_idx < num_presets - 1) {
+                            _settings_item_idx++;
+                            if (_settings_item_idx >= _radio_preset_scroll_pos + 3) {
+                                _radio_preset_scroll_pos = _settings_item_idx - 2;
+                            }
+                        } else if (down && _settings_item_idx == num_presets - 1) {
+                            // Go down to bottom bar
+                            _settings_item_idx = -1;
+                        } else if (up && _settings_item_idx == 0) {
+                            // Wrap to bottom bar
+                            _settings_item_idx = -1;
+                        }
+                    }
+                } else if (select) {
+                    if (_settings_item_idx >= 0 && _settings_item_idx < num_presets) {
+                        // Apply selected preset
+                        const RadioPreset& preset = RADIO_PRESETS[_settings_item_idx];
+                        
+                        if (_node_prefs) {
+                            // NodePrefs stores freq as float MHz, not Hz
+                            _node_prefs->freq = preset.freq_mhz;
+                            _node_prefs->sf = preset.sf;
+                            _node_prefs->bw = preset.bw_khz;
+                            _node_prefs->cr = preset.cr;
+                            
+                            // Save to persistent storage
+                            the_mesh.savePrefs();
+                            
+                            Serial.printf("[Radio] Applied preset: %s (%.3f MHz, SF%u, BW%.1f, CR%u)\n",
+                                preset.name, preset.freq_mhz, preset.sf, preset.bw_khz, preset.cr);
+                            
+                            // Show notification
+                            _notification_from[31] = '\0';
+                            strncpy(_notification_text, "Restarting", 127);
+                            _notification_text[127] = '\0';
+                            _notification_expiry = millis() + 2000;
+                            _has_notification = true;
+                            
+                            // Force immediate screen refresh to show notification
+                            if (_display && _display->isOn()) {
+                                _display->startFrame();
+                                renderSettingsMenu();
+                                if (_has_notification && millis() < _notification_expiry) {
+                                    renderNotification();
+                                }
+                                _display->endFrame();
+                            }
+                            
+                            // Restart device to apply radio settings
+                            Serial.println("[Radio] Restarting device to apply preset...");
+                            delay(2000); // Show notification for 2 seconds
+                            ESP.restart();
+                        }
+                    } else {
+                        // Back button - return to Radio Setup
+                        _settings_category = SettingsCategory::RADIO_SETUP;
+                        _settings_item_idx = 0;
+                    }
                 }
-#endif
                 
             } else if (_settings_category == SettingsCategory::OTHER) {
                 // Other settings navigation (like Theme - arrow keys change, Enter goes to bottom bar)

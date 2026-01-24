@@ -802,10 +802,11 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   memset(&_prefs, 0, sizeof(_prefs));
   _prefs.airtime_factor = 1.0; // one half
   strcpy(_prefs.node_name, "NONAME");
-  _prefs.freq = LORA_FREQ;
-  _prefs.sf = LORA_SF;
-  _prefs.bw = LORA_BW;
-  _prefs.cr = LORA_CR;
+  // Default preset: EU / UK (Narrow) - 869.618 MHz / SF8 / BW62.5 / CR8
+  _prefs.freq = 869.618f;
+  _prefs.sf = 8;
+  _prefs.bw = 62.5f;
+  _prefs.cr = 8;
   _prefs.tx_power_dbm = LORA_TX_POWER;
   _prefs.screen_timeout_seconds = 300; // 5 minutes default
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed

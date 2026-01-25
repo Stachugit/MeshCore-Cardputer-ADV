@@ -157,6 +157,8 @@ protected:
 
 public:
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
+  void factoryReset() { _store->formatFileSystem(); }
+  void saveContacts() { _store->saveContacts(this); }
 
 private:
   void writeOKFrame();
@@ -178,7 +180,6 @@ private:
 
   // helpers, short-cuts
   void saveChannels() { _store->saveChannels(this); }
-  void saveContacts() { _store->saveContacts(this); }
 
   DataStore* _store;
   NodePrefs _prefs;

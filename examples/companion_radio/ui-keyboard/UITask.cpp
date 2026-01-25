@@ -58,6 +58,7 @@ UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
       _settings_selected(false), _settings_category(SettingsCategory::MAIN_MENU), _settings_menu_idx(0), _settings_item_idx(0), _settings_scroll_pos(0), _public_info_scroll_pos(0), _radio_preset_scroll_pos(0), _radio_setup_scroll_pos(0),
       _editing_name(false), _show_qr_code(false), _edit_buffer_length(0),
       _editing_frequency(false), _editing_bandwidth(false), _editing_spreading_factor(false), _editing_coding_rate(false), _editing_tx_power(false), _manual_setup_step(-1),
+      _show_factory_reset_confirm(false),
       _brightness(128), _main_color_idx(0), _secondary_color_idx(1) {
     _alert[0] = '\0';
     _input_buffer[0] = '\0';
@@ -1248,6 +1249,16 @@ void UITask::renderSettingsMenu() {
             _display->print(" >");
         }
         
+        // Factory Reset option
+        y_start += line_height + 5;
+        _display->setColor(DisplayDriver::LIGHT);
+        if (_settings_item_idx == 1) {
+            _display->fillRect(0, y_start - 2, 240, line_height);
+            _display->setColor(DisplayDriver::DARK);
+        }
+        _display->setCursor(10, y_start);
+        _display->print("Factory Reset");
+        
     } else if (_settings_category == SettingsCategory::RADIO_PRESET) {
         _display->setCursor(50, 7);
         _display->print("Choose Preset");
@@ -1831,6 +1842,66 @@ void UITask::renderSettingsMenu() {
             _display->setColor(DisplayDriver::LIGHT);
             _display->setCursor(155, bar_y + 7);
             _display->print("Back");
+        }
+        
+        return;
+    }
+    
+    // Factory Reset confirmation dialog
+    if (_show_factory_reset_confirm) {
+        _display->setColor(DisplayDriver::DARK);
+        _display->fillRect(0, 0, 240, 135);
+        
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, 0, 240, 28);
+        
+        _display->setTextSize(2);
+        const char* title = "Factory Reset";
+        int title_width = _display->getTextWidth(title);
+        int title_x = (240 - title_width) / 2;
+        _display->setCursor(title_x, 7);
+        _display->print(title);
+        
+        // Warning message
+        _display->setTextSize(1);
+        _display->setCursor(15, 45);
+        _display->print("All data will be deleted!");
+        _display->setCursor(15, 60);
+        _display->print("Device will restart.");
+        _display->setCursor(15, 75);
+        _display->print("Are you sure?");
+        
+        // Bottom bar with Yes/No
+        int bar_y = 108;
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->drawRect(0, bar_y, 240, 27);
+        
+        _display->setTextSize(2);
+        
+        // Yes tab (left half: 0-120)
+        if (_settings_menu_idx == 0) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(0, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(40, bar_y + 7);
+            _display->print("Yes");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(40, bar_y + 7);
+            _display->print("Yes");
+        }
+        
+        // No tab (right half: 120-240)
+        if (_settings_menu_idx == 1) {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->fillRect(120, bar_y, 120, 27);
+            _display->setColor(DisplayDriver::DARK);
+            _display->setCursor(165, bar_y + 7);
+            _display->print("No");
+        } else {
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setCursor(165, bar_y + 7);
+            _display->print("No");
         }
         
         return;
@@ -2470,6 +2541,67 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
         return;
     }
     
+    // In Settings Factory Reset confirmation
+    if (_menu_state == MenuScreen::SETTINGS && _show_factory_reset_confirm) {
+        // Check for navigation keys
+        bool left = false, right = false, select = false;
+        for (auto key : status.word) {
+            if (key == ',') left = true;
+            if (key == '/') right = true;
+        }
+        if (status.enter) select = true;
+        
+        if (left || right) {
+            // Toggle between Yes (0) and No (1)
+            _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
+        } else if (select) {
+            if (_settings_menu_idx == 0) {
+                // Yes - perform factory reset
+                _show_factory_reset_confirm = false;
+                
+                // Show notification
+                strncpy(_notification_text, "Resetting...", 127);
+                _notification_text[127] = '\0';
+                _notification_expiry = millis() + 3000;
+                _has_notification = true;
+                
+                // Force render notification
+                _display->startFrame();
+                renderSettingsMenu();
+                renderNotification();
+                _display->endFrame();
+                delay(1000);
+                
+                // Delete all data - format filesystem
+                Serial.println("[Factory Reset] Formatting filesystem...");
+                
+                // Format entire filesystem to factory defaults
+                the_mesh.factoryReset();
+                
+                Serial.println("[Factory Reset] Complete. Restarting...");
+                delay(1000);
+                ESP.restart();
+            } else {
+                // No - cancel
+                _show_factory_reset_confirm = false;
+            }
+        } else if (status.fn) {
+            // Check for FN+` (escape)
+            bool has_backtick = false;
+            for (auto key : status.word) {
+                if (key == '`') has_backtick = true;
+            }
+            if (has_backtick) {
+                // Cancel
+                _show_factory_reset_confirm = false;
+            }
+        } else if (status.opt) {
+            // Cancel
+            _show_factory_reset_confirm = false;
+        }
+        return;
+    }
+    
     // In SETTINGS menu - handle ESC to go back
     if (_menu_state == MenuScreen::SETTINGS) {
         // Check for FN+` (escape) or OPT button
@@ -2522,6 +2654,75 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
     
     // In CONTACTS or CHANNELS menu - check for navigation first, then filter
     if (_menu_state == MenuScreen::CONTACTS || _menu_state == MenuScreen::CHANNELS) {
+        // Check for FN+DEL combination first (delete contact/channel)
+        // FN modifier is in status.fn, DEL key (BACKSPACE) is in status.del
+        if (status.fn && status.del) {
+            if (_menu_state == MenuScreen::CONTACTS) {
+                // Get current selected contact (account for filtering)
+                int num_contacts = the_mesh.getNumContacts();
+                int contact_to_delete_idx = -1;
+                
+                // Build filtered list if search is active
+                if (_search_filter_length > 0) {
+                    int filtered_indices[64];
+                    int filtered_count = 0;
+                    for (int i = 0; i < num_contacts; i++) {
+                        ContactInfo contact;
+                        if (the_mesh.getContactByIdx(i, contact)) {
+                            char lower_name[32];
+                            char lower_filter[32];
+                            for (int j = 0; j < 32 && contact.name[j]; j++) {
+                                lower_name[j] = tolower(contact.name[j]);
+                                lower_name[j+1] = '\0';
+                            }
+                            for (int j = 0; j < 32 && _search_filter[j]; j++) {
+                                lower_filter[j] = tolower(_search_filter[j]);
+                                lower_filter[j+1] = '\0';
+                            }
+                            if (strstr(lower_name, lower_filter) != nullptr) {
+                                filtered_indices[filtered_count++] = i;
+                            }
+                        }
+                    }
+                    if (filtered_count > 0 && _selected_idx < filtered_count) {
+                        contact_to_delete_idx = filtered_indices[_selected_idx];
+                    }
+                } else {
+                    // No filter - use direct index
+                    if (num_contacts > 0 && _selected_idx < num_contacts) {
+                        contact_to_delete_idx = _selected_idx;
+                    }
+                }
+                
+                // Delete contact immediately
+                if (contact_to_delete_idx >= 0) {
+                    ContactInfo contact_to_del;
+                    if (the_mesh.getContactByIdx(contact_to_delete_idx, contact_to_del)) {
+                        the_mesh.removeContact(contact_to_del);
+                        the_mesh.saveContacts();
+                        
+                        // Show notification
+                        char notif_msg[64];
+                        snprintf(notif_msg, sizeof(notif_msg), "Deleted: %s", contact_to_del.name);
+                        strncpy(_notification_text, notif_msg, 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 1500;
+                        _has_notification = true;
+                        
+                        // Adjust selection
+                        num_contacts = the_mesh.getNumContacts();
+                        if (_selected_idx >= num_contacts && num_contacts > 0) {
+                            _selected_idx = num_contacts - 1;
+                        }
+                        if (_selected_idx < _scroll_pos) {
+                            _scroll_pos = _selected_idx;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        
         // Check if this is navigation input (FN + keys or direct navigation keys)
         bool has_nav_keys = false;
         if (status.fn) {
@@ -2953,11 +3154,15 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                         _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
                     }
                 } else if (select) {
-                    if (_settings_item_idx >= 0) {
-                        // If on a setting item, Enter goes to bottom bar
+                    if (_settings_item_idx == 1) {
+                        // Factory Reset selected - show confirmation
+                        _show_factory_reset_confirm = true;
+                        _settings_menu_idx = 0; // Start on "Yes"
+                    } else if (_settings_item_idx == 0) {
+                        // Sleep option - go to bottom bar
                         _settings_menu_idx = 0;
                         _settings_item_idx = -1;
-                    } else if (_settings_menu_idx == 0) {
+                    } else if (_settings_item_idx == -1 && _settings_menu_idx == 0) {
                         // Save - write to LittleFS and go back to main menu
                         saveSettings();
                         _settings_category = SettingsCategory::MAIN_MENU;
@@ -3193,19 +3398,25 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 }
                 
             } else if (_settings_category == SettingsCategory::OTHER) {
-                // Other settings navigation (like Theme - arrow keys change, Enter goes to bottom bar)
+                // Other settings navigation (2 options: Sleep, Factory Reset)
                 const uint16_t timeout_values[] = {10, 30, 60, 120, 300, 0}; // 10s, 30s, 1min, 2min, 5min, Never
                 
                 if (up || down) {
                     if (_settings_item_idx == -1) {
-                        // In bottom bar, go back to Sleep option
-                        _settings_item_idx = 0;
-                    } else if (down) {
+                        // In bottom bar, go back to last option
+                        _settings_item_idx = 1; // Factory Reset
+                    } else if (up && _settings_item_idx > 0) {
+                        _settings_item_idx--;
+                    } else if (down && _settings_item_idx < 1) {
+                        _settings_item_idx++;
+                    } else if (down && _settings_item_idx == 1) {
                         // Go down to bottom bar
                         _settings_menu_idx = 0;
                         _settings_item_idx = -1;
                     } else if (up && _settings_item_idx == 0) {
-                        // Can't go up from Sleep
+                        // Wrap to bottom bar
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = -1;
                     }
                 } else if (left || right) {
                     if (_settings_item_idx == 0 && _node_prefs) {
@@ -3257,10 +3468,20 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                         _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
                     }
                 } else if (select) {
-                    // Enter - return to main menu (changes are saved immediately)
-                    _settings_category = SettingsCategory::MAIN_MENU;
-                    _settings_menu_idx = 0;
-                    _settings_item_idx = 0;
+                    if (_settings_item_idx == 1) {
+                        // Factory Reset selected - show confirmation
+                        _show_factory_reset_confirm = true;
+                        _settings_menu_idx = 0; // Start on "Yes"
+                    } else if (_settings_item_idx == -1) {
+                        // In bottom bar - return to main menu (changes are saved immediately)
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = 0;
+                    } else {
+                        // On Sleep option - go to bottom bar
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = -1;
+                    }
                 }
                 
             } else if (_settings_category == SettingsCategory::DEVICE_INFO) {

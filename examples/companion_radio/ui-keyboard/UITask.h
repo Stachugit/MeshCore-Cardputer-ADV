@@ -159,6 +159,9 @@ private:
     bool _editing_tx_power;
     int _manual_setup_step; // 0=frequency, 1=bandwidth, 2=SF, 3=CR, 4=TX power, -1=not in manual setup
     
+    // Factory reset confirmation
+    bool _show_factory_reset_confirm;
+    
     // Settings values
     uint8_t _brightness; // 0-255
     int _main_color_idx; // Index into COLORS array (foreground)

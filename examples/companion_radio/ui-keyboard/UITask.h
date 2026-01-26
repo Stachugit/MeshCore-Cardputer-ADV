@@ -43,18 +43,18 @@ struct RadioPreset {
 // Radio presets list
 static const RadioPreset RADIO_PRESETS[] = {
     {"New Zealand", 917.375f, 11, 250.0f, 5},
-    {"New Zealand (Narrow)", 917.375f, 7, 62.5f, 5},
+    {"New Zealand (Nrrw)", 917.375f, 7, 62.5f, 5},
     {"Portugal 868", 869.618f, 7, 62.5f, 6},
     {"Switzerland", 869.618f, 8, 62.5f, 8},
-    {"USA / Canada (Rec.)", 910.525f, 7, 62.5f, 5},
+    {"USA / Canada (Rec)", 910.525f, 7, 62.5f, 5},
     {"Vietnam", 920.250f, 11, 250.0f, 5},
     {"Australia", 915.800f, 10, 250.0f, 5},
     {"Australia (Narrow)", 916.575f, 7, 62.5f, 8},
     {"Australia: SA, WA", 923.125f, 8, 62.5f, 8},
     {"Australia: QLD", 923.125f, 8, 62.5f, 5},
     {"EU / UK (Narrow)", 869.618f, 8, 62.5f, 8},
-    {"EU / UK (Long Range)", 869.525f, 11, 250.0f, 5},
-    {"EU / UK (Med Range)", 869.525f, 10, 250.0f, 5},
+    {"EU / UK (Long Rng)", 869.525f, 11, 250.0f, 5},
+    {"EU / UK (Med Rng)", 869.525f, 10, 250.0f, 5},
     {"Czech Rep (Narrow)", 869.432f, 7, 62.5f, 5}
 };
 #define NUM_RADIO_PRESETS 14
@@ -111,6 +111,7 @@ private:
     unsigned long _auto_off;
     unsigned long _screen_timeout_millis;  // Current screen timeout in ms
     bool _screen_sleeping;  // True when in light sleep mode
+    bool _ignore_next_keypress;  // True to ignore next keypress (used after wake)
     bool _need_refresh;
     char _alert[128];
     unsigned long _alert_expiry;
@@ -218,6 +219,7 @@ public:
     
     void showAlert(const char* msg);
     void gotoScreen(MenuScreen screen);
+    void requestRefresh() { _need_refresh = true; }  // Force screen refresh
     
     uint16_t getBattMilliVolts();
     bool isButtonPressed();

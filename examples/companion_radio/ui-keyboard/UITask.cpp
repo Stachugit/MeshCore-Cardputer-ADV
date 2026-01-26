@@ -49,7 +49,7 @@ extern MyMesh the_mesh;
 UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
     : AbstractUITask(board, serial_interface), _display(nullptr),
       _menu_state(MenuScreen::CONTACTS), _next_refresh(0), _auto_off(0),
-      _screen_timeout_millis(300000), _screen_sleeping(false),
+      _screen_timeout_millis(300000), _screen_sleeping(false), _ignore_next_keypress(false),
       _need_refresh(false), _alert_expiry(0), _input_length(0), _input_mode(false),
       _scroll_pos(0), _selected_idx(0), _chat_is_channel(false),
       _chat_history_count(0), _chat_scroll(0), _notification_expiry(0), _has_notification(false),
@@ -148,7 +148,32 @@ void UITask::loop() {
                 _has_notification = false;
                 _need_refresh = true;
             } else {
-                handleKeyPress(status);
+                // Check if we need to wake from sleep first
+                bool was_sleeping = _screen_sleeping;
+                bool was_off = (_display && !_display->isOn());
+                
+                // Wake from sleep if sleeping
+                if (_screen_sleeping) {
+                    _screen_sleeping = false;
+                    _ignore_next_keypress = true;  // Ignore this wake keypress
+                    Serial.println("[Sleep] Waking from light sleep (key press)");
+                }
+                
+                // Turn on display if off
+                if (_display && !_display->isOn()) {
+                    _display->turnOn();
+                    _ignore_next_keypress = true;  // Ignore this wake keypress
+                    Serial.println("[Screen] Display turned on (key press)");
+                }
+                
+                // Only handle keypress if we weren't sleeping/off
+                if (!_ignore_next_keypress) {
+                    handleKeyPress(status);
+                } else {
+                    // This was the wake keypress, ignore it
+                    _ignore_next_keypress = false;
+                    Serial.println("[Input] Ignoring wake keypress");
+                }
             }
             _need_refresh = true;
             
@@ -157,17 +182,6 @@ void UITask::loop() {
                 _auto_off = millis() + _screen_timeout_millis;
             } else {
                 _auto_off = 0; // Never timeout
-            }
-            
-            // Wake from sleep if sleeping
-            if (_screen_sleeping) {
-                _screen_sleeping = false;
-                Serial.println("[Sleep] Waking from light sleep (key press)");
-            }
-            
-            if (_display && !_display->isOn()) {
-                _display->turnOn();
-                Serial.println("[Screen] Display turned on (key press)");
             }
         }
     }
@@ -376,8 +390,8 @@ void UITask::renderContactList() {
                 _display->setColor(DisplayDriver::LIGHT);
                 _display->drawRect(0, y, 240, 28);
                 
-                // Fill white if selected
-                if (contact_idx == _selected_idx) {
+                // Fill white if selected (don't select if _selected_idx == -1, which means hamburger is selected)
+                if (contact_idx == _selected_idx && _selected_idx != -1) {
                     _display->fillRect(0, y, 240, 28);
                     _display->setColor(DisplayDriver::DARK);  // Black text
                     // Arrow indicator
@@ -513,8 +527,8 @@ void UITask::renderChannelList() {
             _display->setColor(DisplayDriver::LIGHT);
             _display->drawRect(0, y, 240, 28);
             
-            // Fill white if selected
-            if (channel_idx == _selected_idx) {
+            // Fill white if selected (don't select if _selected_idx == -1, which means hamburger is selected)
+            if (channel_idx == _selected_idx && _selected_idx != -1) {
                 _display->fillRect(0, y, 240, 28);
                 _display->setColor(DisplayDriver::DARK);  // Black text
                 // Arrow indicator
@@ -570,7 +584,7 @@ void UITask::renderChatScreen() {
         char name[13];
         strncpy(name, filtered_name, 12);
         name[12] = '\0';
-        snprintf(full_name, 15, "#%s", name);
+        snprintf(full_name, 15, "%s", name);
     } else {
         filterDisplayText(_chat_contact.name, filtered_name, sizeof(filtered_name));
         char name[13];
@@ -839,10 +853,10 @@ void UITask::renderChatScreen() {
         // Show input text (max 150 chars enforced)
         _display->setCursor(6, 112);
         
-        // Show last 19 chars that fit on screen
+        // Show last 15 chars that fit on screen (leave space for counter on right)
         char display_buf[20];
-        int visible_chars = min(19, _input_length);
-        int start = max(0, _input_length - 19);
+        int visible_chars = min(15, _input_length);
+        int start = max(0, _input_length - 15);
         strncpy(display_buf, _input_buffer + start, visible_chars);
         display_buf[visible_chars] = '\0';
         
@@ -851,7 +865,7 @@ void UITask::renderChatScreen() {
         // Blinking cursor
         if ((millis() / 350) % 2 == 0) {
             int cursor_x = 6 + _display->getTextWidth(display_buf);
-            if (cursor_x < 190) { // Leave space for counter
+            if (cursor_x < 180) { // Leave space for counter
                 _display->fillRect(cursor_x, 112, 3, 14);
             }
         }
@@ -961,7 +975,7 @@ void UITask::renderSettingsMenu() {
         _display->print("Settings");
         
         // Show categories list (max 3 visible at once, like contact/channel lists)
-        const char* categories[] = {"Theme", "Public Info", "Radio Setup", "Other", "Device Info"};
+        const char* categories[] = {"Public Info", "Radio Setup", "Theme", "Other", "Device Info"};
         int num_categories = 5;
         
         // Render 3 category items (y: 27, 54, 81)
@@ -977,8 +991,8 @@ void UITask::renderSettingsMenu() {
             _display->setColor(DisplayDriver::LIGHT);
             _display->drawRect(0, y, 240, 28);
             
-            // Fill white if selected
-            if (category_idx == _settings_item_idx) {
+            // Fill white if selected (only if _settings_item_idx matches and is not -1)
+            if (category_idx == _settings_item_idx && _settings_item_idx != -1) {
                 _display->fillRect(0, y, 240, 28);
                 _display->setColor(DisplayDriver::DARK);  // Black text
                 // Arrow indicator
@@ -1005,53 +1019,53 @@ void UITask::renderSettingsMenu() {
         
         // Brightness setting
         _display->setColor(DisplayDriver::LIGHT);
-        if (_settings_item_idx == 0) {
+        if (_settings_item_idx == 0 && _settings_menu_idx != 1) {
             _display->fillRect(0, y_start - 2, 240, line_height);
             _display->setColor(DisplayDriver::DARK);
         }
         _display->setCursor(10, y_start);
         _display->print("Brightness: ");
-        if (_settings_item_idx == 0) {
+        if (_settings_item_idx == 0 && _settings_menu_idx != 1) {
             _display->print("< ");
         }
         char brightness_str[8];
         sprintf(brightness_str, "%d%%", (_brightness * 100) / 255);
         _display->print(brightness_str);
-        if (_settings_item_idx == 0) {
+        if (_settings_item_idx == 0 && _settings_menu_idx != 1) {
             _display->print(" >");
         }
         
         // Main Color setting
         y_start += line_height + 5;
         _display->setColor(DisplayDriver::LIGHT);
-        if (_settings_item_idx == 1) {
+        if (_settings_item_idx == 1 && _settings_menu_idx != 1) {
             _display->fillRect(0, y_start - 2, 240, line_height);
             _display->setColor(DisplayDriver::DARK);
         }
         _display->setCursor(10, y_start);
         _display->print("Main: ");
-        if (_settings_item_idx == 1) {
+        if (_settings_item_idx == 1 && _settings_menu_idx != 1) {
             _display->print("< ");
         }
         _display->print(COLORS[_main_color_idx].name);
-        if (_settings_item_idx == 1) {
+        if (_settings_item_idx == 1 && _settings_menu_idx != 1) {
             _display->print(" >");
         }
         
         // Secondary Color setting
         y_start += line_height + 5;
         _display->setColor(DisplayDriver::LIGHT);
-        if (_settings_item_idx == 2) {
+        if (_settings_item_idx == 2 && _settings_menu_idx != 1) {
             _display->fillRect(0, y_start - 2, 240, line_height);
             _display->setColor(DisplayDriver::DARK);
         }
         _display->setCursor(10, y_start);
         _display->print("Secondary: ");
-        if (_settings_item_idx == 2) {
+        if (_settings_item_idx == 2 && _settings_menu_idx != 1) {
             _display->print("< ");
         }
         _display->print(COLORS[_secondary_color_idx].name);
-        if (_settings_item_idx == 2) {
+        if (_settings_item_idx == 2 && _settings_menu_idx != 1) {
             _display->print(" >");
         }
         
@@ -1080,8 +1094,8 @@ void UITask::renderSettingsMenu() {
             _display->setColor(DisplayDriver::LIGHT);
             _display->drawRect(0, y, 240, 28);
             
-            // Fill white if selected
-            if (option_idx == _settings_item_idx) {
+            // Fill white if selected (but not when Back button is selected)
+            if (option_idx == _settings_item_idx && _settings_menu_idx != 1) {
                 _display->fillRect(0, y, 240, 28);
                 _display->setColor(DisplayDriver::DARK);  // Black text
                 // Arrow indicator
@@ -1147,8 +1161,8 @@ void UITask::renderSettingsMenu() {
             _display->setColor(DisplayDriver::LIGHT);
             _display->drawRect(0, y, 240, 28);
             
-            // Fill white if selected
-            if (option_idx == _settings_item_idx) {
+            // Fill white if selected (but not when Back button is selected)
+            if (option_idx == _settings_item_idx && _settings_menu_idx != 1) {
                 _display->fillRect(0, y, 240, 28);
                 _display->setColor(DisplayDriver::DARK);  // Black text
                 // Arrow indicator
@@ -1206,58 +1220,77 @@ void UITask::renderSettingsMenu() {
         _display->setCursor(94, 7);
         _display->print("Other");
         
-        // Show Other settings (similar to Theme)
-        _display->setTextSize(2);
-        int y_start = 35;
-        int line_height = 18;
+        // Show Other options (3 options: Sleep timeout, Factory Reset, Support)
+        const char* options[] = {"Sleep timeout", "Factory Reset", "Spark the project"};
+        int num_options = 3;
         
-        // Sleep timeout setting
-        _display->setColor(DisplayDriver::LIGHT);
-        if (_settings_item_idx == 0) {
-            _display->fillRect(0, y_start - 2, 240, line_height);
-            _display->setColor(DisplayDriver::DARK);
-        }
-        _display->setCursor(10, y_start);
-        _display->print("Sleep: ");
-        if (_settings_item_idx == 0) {
-            _display->print("< ");
-        }
+        // Render 3 option items (y: 27, 54, 81)
+        int y_positions[3] = {27, 54, 81};
         
-        // Display current timeout value
-        if (_node_prefs) {
-            if (_node_prefs->screen_timeout_seconds == 0) {
-                _display->print("Never");
-            } else if (_node_prefs->screen_timeout_seconds == 10) {
-                _display->print("10s");
-            } else if (_node_prefs->screen_timeout_seconds == 30) {
-                _display->print("30s");
-            } else if (_node_prefs->screen_timeout_seconds == 60) {
-                _display->print("1min");
-            } else if (_node_prefs->screen_timeout_seconds == 120) {
-                _display->print("2min");
-            } else if (_node_prefs->screen_timeout_seconds == 300) {
-                _display->print("5min");
+        for (int i = 0; i < 3; i++) {
+            int option_idx = i; // No scrolling needed for 3 items
+            if (option_idx >= num_options) break;
+            
+            int y = y_positions[i];
+            
+            // Draw border
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->drawRect(0, y, 240, 28);
+            
+            // Fill white if selected (but not when Back button is selected)
+            if (option_idx == _settings_item_idx && _settings_menu_idx != 1) {
+                _display->fillRect(0, y, 240, 28);
+                _display->setColor(DisplayDriver::DARK);  // Black text
+                // Arrow indicator
+                _display->setCursor(2, y + 7);
+                _display->setTextSize(2);
+                _display->print(">");
             } else {
-                // Fallback for custom values
-                char timeout_str[10];
-                sprintf(timeout_str, "%us", _node_prefs->screen_timeout_seconds);
-                _display->print(timeout_str);
+                // Special gold color for "Spark the project" option (index 2)
+                if (option_idx == 2) {
+                    M5Cardputer.Display.setTextColor(0xFEA0);  // Gold color (RGB: 255, 215, 0)
+                } else {
+                    _display->setColor(DisplayDriver::LIGHT);  // White text
+                }
+            }
+            
+            _display->setTextSize(2);
+            _display->setCursor(16, y + 6);
+            _display->print(options[option_idx]);
+            
+            // Show current value for Sleep timeout (option 0)
+            if (option_idx == 0 && _node_prefs) {
+                _display->setTextSize(2);
+                int value_x = 190;
+                int value_y = y + 6;
+                
+                // Restore proper color (but not when Back is selected)
+                if (option_idx == _settings_item_idx && _settings_menu_idx != 1) {
+                    _display->setColor(DisplayDriver::DARK);
+                } else {
+                    _display->setColor(DisplayDriver::LIGHT);
+                }
+                
+                _display->setCursor(value_x, value_y);
+                if (_node_prefs->screen_timeout_seconds == 0) {
+                    _display->print("Never");
+                } else if (_node_prefs->screen_timeout_seconds == 10) {
+                    _display->print("10s");
+                } else if (_node_prefs->screen_timeout_seconds == 30) {
+                    _display->print("30s");
+                } else if (_node_prefs->screen_timeout_seconds == 60) {
+                    _display->print("1m");
+                } else if (_node_prefs->screen_timeout_seconds == 120) {
+                    _display->print("2m");
+                } else if (_node_prefs->screen_timeout_seconds == 300) {
+                    _display->print("5m");
+                } else {
+                    char timeout_str[10];
+                    sprintf(timeout_str, "%us", _node_prefs->screen_timeout_seconds);
+                    _display->print(timeout_str);
+                }
             }
         }
-        
-        if (_settings_item_idx == 0) {
-            _display->print(" >");
-        }
-        
-        // Factory Reset option
-        y_start += line_height + 5;
-        _display->setColor(DisplayDriver::LIGHT);
-        if (_settings_item_idx == 1) {
-            _display->fillRect(0, y_start - 2, 240, line_height);
-            _display->setColor(DisplayDriver::DARK);
-        }
-        _display->setCursor(10, y_start);
-        _display->print("Factory Reset");
         
     } else if (_settings_category == SettingsCategory::RADIO_PRESET) {
         _display->setCursor(50, 7);
@@ -1291,20 +1324,6 @@ void UITask::renderSettingsMenu() {
             _display->setTextSize(2);
             _display->setCursor(16, y + 6);
             _display->print(RADIO_PRESETS[preset_idx].name);
-        }
-        
-        // Show preset details at bottom (for currently selected)
-        if (_settings_item_idx >= 0 && _settings_item_idx < NUM_RADIO_PRESETS) {
-            _display->setTextSize(1);
-            _display->setColor(DisplayDriver::LIGHT);
-            _display->setCursor(5, 113);
-            char details[64];
-            snprintf(details, sizeof(details), "%.3f MHz SF%u BW%.1f CR%u",
-                RADIO_PRESETS[_settings_item_idx].freq_mhz,
-                RADIO_PRESETS[_settings_item_idx].sf,
-                RADIO_PRESETS[_settings_item_idx].bw_khz,
-                RADIO_PRESETS[_settings_item_idx].cr);
-            _display->print(details);
         }
         
     } else if (_settings_category == SettingsCategory::DEVICE_INFO) {
@@ -1908,27 +1927,38 @@ void UITask::renderSettingsMenu() {
     }
     
     if (_show_qr_code) {
-        // QR Code display - show device contact info in meshcore:// URI format
+        // QR Code display
+        // Set brightness to 9% for better camera readability
+        M5Cardputer.Display.setBrightness(23);
+        
         // Clear screen to black
         M5.Display.fillScreen(0x0000);
         
-        // Convert public key to hex string
-        char pub_key_hex[65]; // 32 bytes * 2 + null terminator
-        mesh::Utils::toHex(pub_key_hex, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
-        pub_key_hex[64] = '\0';
-        
-        // Build meshcore:// URI with contact info
         char qr_data[256];
-        const char* device_name = _node_prefs ? _node_prefs->node_name : "Device";
-        snprintf(qr_data, sizeof(qr_data), 
-                 "meshcore://contact/add?name=%s&public_key=%s&type=1",
-                 device_name, pub_key_hex);
+        
+        // Check if we're in Other menu (Support the project)
+        if (_settings_category == SettingsCategory::OTHER) {
+            // Show Buy Me a Coffee QR code
+            snprintf(qr_data, sizeof(qr_data), "https://buymeacoffee.com/stachu");
+        } else {
+            // Show device contact info in meshcore:// URI format (Public Info -> Share key)
+            // Convert public key to hex string
+            char pub_key_hex[65]; // 32 bytes * 2 + null terminator
+            mesh::Utils::toHex(pub_key_hex, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+            pub_key_hex[64] = '\0';
+            
+            // Build meshcore:// URI with contact info
+            const char* device_name = _node_prefs ? _node_prefs->node_name : "Device";
+            snprintf(qr_data, sizeof(qr_data), 
+                     "meshcore://contact/add?name=%s&public_key=%s&type=1",
+                     device_name, pub_key_hex);
+        }
         
         // Create QR code using custom M5GFX implementation
         QRcode_M5GFX qrcode(&M5.Display);
         qrcode.init();
         
-        // Create and render QR code with full URI
+        // Create and render QR code
         qrcode.create(String(qr_data));
         
         return; // Skip bottom bar
@@ -1946,54 +1976,33 @@ void UITask::renderSettingsMenu() {
     
     _display->setTextSize(2);
     
-    // Save tab (left half: 0-120) - only show in Theme category
-    if (_settings_category == SettingsCategory::THEME) {
-        if (_settings_item_idx == -1 && _settings_menu_idx == 0) {
-            // Active - white fill, black text
-            _display->setColor(DisplayDriver::LIGHT);
-            _display->fillRect(0, bar_y, 120, 27);
-            _display->setColor(DisplayDriver::DARK);
-            _display->setCursor(35, bar_y + 7);
-            _display->print("Save");
-        } else {
-            // Inactive - white text only
-            _display->setColor(DisplayDriver::LIGHT);
-            _display->setCursor(35, bar_y + 7);
-            _display->print("Save");
-        }
+    // Back button - full width for all categories
+    // Highlight when:
+    // - In MAIN_MENU when _settings_item_idx == -1
+    // - In other categories when _settings_menu_idx == 1
+    bool should_highlight = false;
+    if (_settings_category == SettingsCategory::MAIN_MENU) {
+        // Highlight when _settings_item_idx == -1 (Back is selected)
+        should_highlight = (_settings_item_idx == -1);
+    } else {
+        // In other categories, highlight when _settings_menu_idx == 1
+        should_highlight = (_settings_menu_idx == 1);
     }
     
-    // Back tab (right half or full width if no Save)
-    if (_settings_category == SettingsCategory::THEME) {
-        // Right half
-        if (_settings_item_idx == -1 && _settings_menu_idx == 1) {
-            _display->setColor(DisplayDriver::LIGHT);
-            _display->fillRect(120, bar_y, 120, 27);
-            _display->setColor(DisplayDriver::DARK);
-            _display->setCursor(155, bar_y + 7);
-            _display->print("Back");
-        } else {
-            _display->setColor(DisplayDriver::LIGHT);
-            _display->setCursor(155, bar_y + 7);
-            _display->print("Back");
-        }
+    if (should_highlight) {
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->fillRect(0, bar_y, 240, 27);
+        _display->setColor(DisplayDriver::DARK);
+        int back_width = _display->getTextWidth("Back");
+        int back_x = (240 - back_width) / 2;
+        _display->setCursor(back_x, bar_y + 7);
+        _display->print("Back");
     } else {
-        // Full width (no Save button)
-        if (_settings_item_idx == -1) {
-            _display->setColor(DisplayDriver::LIGHT);
-            _display->fillRect(0, bar_y, 240, 27);
-            _display->setColor(DisplayDriver::DARK);
-            int back_width = _display->getTextWidth("Back");
-            int back_x = (240 - back_width) / 2;
-            _display->setCursor(back_x, bar_y + 7);
-            _display->print("Back");
-        } else {
-            _display->setColor(DisplayDriver::LIGHT);
-            int back_width = _display->getTextWidth("Back");
-            int back_x = (240 - back_width) / 2;
-            _display->setCursor(back_x, bar_y + 7);
-            _display->print("Back");
-        }
+        _display->setColor(DisplayDriver::LIGHT);
+        int back_width = _display->getTextWidth("Back");
+        int back_x = (240 - back_width) / 2;
+        _display->setCursor(back_x, bar_y + 7);
+        _display->print("Back");
     }
 }
 
@@ -2538,6 +2547,8 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
     if (_menu_state == MenuScreen::SETTINGS && _show_qr_code) {
         // Any key closes QR code
         _show_qr_code = false;
+        // Restore brightness
+        M5Cardputer.Display.setBrightness(_brightness);
         return;
     }
     
@@ -2846,8 +2857,9 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     }
                     // If no contacts, stay on settings icon
                 } else if (_selected_idx == 0 && num_contacts > 0) {
-                    // At first contact, go to settings icon
+                    // At first contact, go to settings icon and deselect contact
                     _settings_selected = true;
+                    _selected_idx = -1; // Deselect contact
                 } else if (num_contacts > 0) {
                     // Navigate up in list
                     _selected_idx = (_selected_idx > 0) ? _selected_idx - 1 : num_contacts - 1;
@@ -2868,14 +2880,20 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     }
                     // If no contacts, stay on settings icon
                 } else if (num_contacts > 0) {
-                    // Navigate down in list
-                    _selected_idx = (_selected_idx < num_contacts - 1) ? _selected_idx + 1 : 0;
-                    if (_selected_idx >= _scroll_pos + 3) {
-                        _scroll_pos = _selected_idx - 2;
-                    }
-                    // If wrapped to 0, deselect settings
-                    if (_selected_idx == 0 && _selected_idx < _scroll_pos) {
+                    // If _selected_idx is -1 (hamburger selected), go to first contact
+                    if (_selected_idx == -1) {
+                        _selected_idx = 0;
                         _scroll_pos = 0;
+                    } else {
+                        // Navigate down in list
+                        _selected_idx = (_selected_idx < num_contacts - 1) ? _selected_idx + 1 : 0;
+                        if (_selected_idx >= _scroll_pos + 3) {
+                            _scroll_pos = _selected_idx - 2;
+                        }
+                        // If wrapped to 0, deselect settings
+                        if (_selected_idx == 0 && _selected_idx < _scroll_pos) {
+                            _scroll_pos = 0;
+                        }
                     }
                 } else if (num_contacts == 0 && !_settings_selected) {
                     // No contacts but not on settings - go to settings
@@ -2890,7 +2908,7 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     _settings_item_idx = 0; // Start on first category
                     _settings_scroll_pos = 0; // Reset scroll
                     _settings_selected = false;
-                } else if (num_contacts > 0) {
+                } else if (num_contacts > 0 && _selected_idx >= 0) {
                     // Open chat with selected contact (use filtered index)
                     int real_idx = filtered_indices[_selected_idx];
                     if (the_mesh.getContactByIdx(real_idx, _chat_contact)) {
@@ -2969,8 +2987,9 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     }
                     // If no channels, stay on settings icon
                 } else if (_selected_idx == 0 && num_channels > 0) {
-                    // At first channel, go to settings icon
+                    // At first channel, go to settings icon and deselect channel
                     _settings_selected = true;
+                    _selected_idx = -1; // Deselect channel
                 } else if (num_channels > 0) {
                     // Navigate up in list
                     _selected_idx = (_selected_idx > 0) ? _selected_idx - 1 : num_channels - 1;
@@ -2991,13 +3010,19 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     }
                     // If no channels, stay on settings icon
                 } else if (num_channels > 0) {
-                    // Navigate down in list
-                    _selected_idx = (_selected_idx < num_channels - 1) ? _selected_idx + 1 : 0;
-                    if (_selected_idx >= _scroll_pos + 3) {
-                        _scroll_pos = _selected_idx - 2;
-                    }
-                    if (_selected_idx == 0 && _selected_idx < _scroll_pos) {
+                    // If _selected_idx is -1 (hamburger selected), go to first channel
+                    if (_selected_idx == -1) {
+                        _selected_idx = 0;
                         _scroll_pos = 0;
+                    } else {
+                        // Navigate down in list
+                        _selected_idx = (_selected_idx < num_channels - 1) ? _selected_idx + 1 : 0;
+                        if (_selected_idx >= _scroll_pos + 3) {
+                            _scroll_pos = _selected_idx - 2;
+                        }
+                        if (_selected_idx == 0 && _selected_idx < _scroll_pos) {
+                            _scroll_pos = 0;
+                        }
                     }
                 } else if (num_channels == 0 && !_settings_selected) {
                     // No channels but not on settings - go to settings
@@ -3012,7 +3037,7 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     _settings_item_idx = 0; // Start on first category
                     _settings_scroll_pos = 0; // Reset scroll
                     _settings_selected = false;
-                } else if (num_channels > 0) {
+                } else if (num_channels > 0 && _selected_idx >= 0) {
                     // Open chat with selected channel (use filtered index)
                     int real_idx = filtered_indices[_selected_idx];
                     _chat_channel = channels[real_idx];
@@ -3074,9 +3099,9 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     if (_settings_item_idx >= 0) {
                         // Enter selected category
                         switch (_settings_item_idx) {
-                            case 0: _settings_category = SettingsCategory::THEME; break;
-                            case 1: _settings_category = SettingsCategory::PUBLIC_INFO; break;
-                            case 2: _settings_category = SettingsCategory::RADIO_SETUP; break;
+                            case 0: _settings_category = SettingsCategory::PUBLIC_INFO; break;
+                            case 1: _settings_category = SettingsCategory::RADIO_SETUP; break;
+                            case 2: _settings_category = SettingsCategory::THEME; break;
                             case 3: _settings_category = SettingsCategory::OTHER; break;
                             case 4: _settings_category = SettingsCategory::DEVICE_INFO; break;
                         }
@@ -3094,9 +3119,10 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
             } else if (_settings_category == SettingsCategory::THEME) {
                 // Theme category navigation
                 if (up || down) {
-                    if (_settings_item_idx == -1) {
-                        // In bottom bar, go back to settings items
+                    if (_settings_menu_idx == 1) {
+                        // In bottom bar (Back button), go back to settings items
                         _settings_item_idx = 2; // Start on Secondary Color (bottom item)
+                        _settings_menu_idx = 0;
                     } else {
                         // Navigate between settings items (0 = Brightness, 1 = Main Color, 2 = Secondary Color)
                         if (up && _settings_item_idx > 0) {
@@ -3104,9 +3130,8 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                         } else if (down && _settings_item_idx < 2) {
                             _settings_item_idx++;
                         } else if (down && _settings_item_idx == 2) {
-                            // Go down to bottom bar
-                            _settings_menu_idx = 0;
-                            _settings_item_idx = -1;
+                            // Go down to bottom bar (Back button)
+                            _settings_menu_idx = 1;
                         } else if (up && _settings_item_idx == 0) {
                             // Can't go up from Brightness
                         }
@@ -3149,28 +3174,11 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             _secondary_color_idx = 0;
                         }
                         applyTheme();
-                    } else {
-                        // In bottom bar, toggle between Save (0) and Back (1)
-                        _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
                     }
                 } else if (select) {
-                    if (_settings_item_idx == 1) {
-                        // Factory Reset selected - show confirmation
-                        _show_factory_reset_confirm = true;
-                        _settings_menu_idx = 0; // Start on "Yes"
-                    } else if (_settings_item_idx == 0) {
-                        // Sleep option - go to bottom bar
-                        _settings_menu_idx = 0;
-                        _settings_item_idx = -1;
-                    } else if (_settings_item_idx == -1 && _settings_menu_idx == 0) {
-                        // Save - write to LittleFS and go back to main menu
+                    if (_settings_menu_idx == 1) {
+                        // Back button - save settings and return to main menu
                         saveSettings();
-                        _settings_category = SettingsCategory::MAIN_MENU;
-                        _settings_menu_idx = 0;
-                        _settings_item_idx = 0;
-                    } else {
-                        // Back - don't save, return to main menu
-                        loadSettings();
                         _settings_category = SettingsCategory::MAIN_MENU;
                         _settings_menu_idx = 0;
                         _settings_item_idx = 0;
@@ -3182,10 +3190,11 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 int num_options = 3;
                 
                 if (up || down) {
-                    if (_settings_item_idx == -1) {
+                    if (_settings_menu_idx == 1) {
                         // In bottom bar, go back to options
                         _settings_item_idx = num_options - 1;
                         _public_info_scroll_pos = (_settings_item_idx > 2) ? _settings_item_idx - 2 : 0;
+                        _settings_menu_idx = 0;
                     } else {
                         // Navigate between options with scrolling
                         if (up && _settings_item_idx > 0) {
@@ -3200,14 +3209,20 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             }
                         } else if (down && _settings_item_idx == num_options - 1) {
                             // Go down to bottom bar
-                            _settings_item_idx = -1;
+                            _settings_menu_idx = 1;
                         } else if (up && _settings_item_idx == 0) {
                             // Wrap to bottom bar
-                            _settings_item_idx = -1;
+                            _settings_menu_idx = 1;
                         }
                     }
                 } else if (select) {
-                    if (_settings_item_idx >= 0) {
+                    if (_settings_menu_idx == 1) {
+                        // Back button - return to main menu
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 0;
+                        _settings_menu_idx = 0;
+                        _public_info_scroll_pos = 0;
+                    } else if (_settings_item_idx >= 0) {
                         // Handle option selection
                         switch (_settings_item_idx) {
                             case 0: // Change name
@@ -3230,12 +3245,6 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                                 }
                                 break;
                         }
-                    } else {
-                        // Back button - return to main menu
-                        _settings_category = SettingsCategory::MAIN_MENU;
-                        _settings_item_idx = 0;
-                        _settings_menu_idx = 0;
-                        _public_info_scroll_pos = 0;
                     }
                 }
                 
@@ -3249,13 +3258,14 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
 #endif
                 
                 if (up || down) {
-                    if (_settings_item_idx == -1) {
+                    if (_settings_menu_idx == 1) {
                         // In bottom bar, go back to options
                         _settings_item_idx = num_options - 1;
                         // Adjust scroll position
                         if (_settings_item_idx >= 3) {
                             _radio_setup_scroll_pos = _settings_item_idx - 2;
                         }
+                        _settings_menu_idx = 0;
                     } else {
                         // Navigate between options with scrolling
                         if (up && _settings_item_idx > 0) {
@@ -3270,14 +3280,20 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             }
                         } else if (down && _settings_item_idx == num_options - 1) {
                             // Go down to bottom bar
-                            _settings_item_idx = -1;
+                            _settings_menu_idx = 1;
                         } else if (up && _settings_item_idx == 0) {
                             // Wrap to bottom bar
-                            _settings_item_idx = -1;
+                            _settings_menu_idx = 1;
                         }
                     }
                 } else if (select) {
-                    if (_settings_item_idx >= 0) {
+                    if (_settings_menu_idx == 1) {
+                        // Back button - return to main menu
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 1; // Return to Radio Setup in main menu
+                        _settings_menu_idx = 0;
+                        _radio_setup_scroll_pos = 0;
+                    } else if (_settings_item_idx >= 0) {
                         // Handle option selection
 #ifdef HAS_GPS
                         if (_settings_item_idx == 0) {
@@ -3313,11 +3329,6 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             _settings_menu_idx = 0;
                         }
 #endif
-                    } else {
-                        // Back button - return to main menu
-                        _settings_category = SettingsCategory::MAIN_MENU;
-                        _settings_item_idx = 0;
-                        _settings_menu_idx = 0;
                     }
                 }
                 
@@ -3398,28 +3409,29 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 }
                 
             } else if (_settings_category == SettingsCategory::OTHER) {
-                // Other settings navigation (2 options: Sleep, Factory Reset)
+                // Other settings navigation (3 options: Sleep timeout, Factory Reset, Support)
                 const uint16_t timeout_values[] = {10, 30, 60, 120, 300, 0}; // 10s, 30s, 1min, 2min, 5min, Never
                 
                 if (up || down) {
-                    if (_settings_item_idx == -1) {
-                        // In bottom bar, go back to last option
-                        _settings_item_idx = 1; // Factory Reset
-                    } else if (up && _settings_item_idx > 0) {
-                        _settings_item_idx--;
-                    } else if (down && _settings_item_idx < 1) {
-                        _settings_item_idx++;
-                    } else if (down && _settings_item_idx == 1) {
-                        // Go down to bottom bar
-                        _settings_menu_idx = 0;
-                        _settings_item_idx = -1;
-                    } else if (up && _settings_item_idx == 0) {
-                        // Wrap to bottom bar
-                        _settings_menu_idx = 0;
-                        _settings_item_idx = -1;
+                    if (_settings_menu_idx == 0) {
+                        // Navigate between 3 options (0-2) and bottom bar
+                        if (up && _settings_item_idx > 0) {
+                            _settings_item_idx--;
+                        } else if (down && _settings_item_idx < 2) {
+                            _settings_item_idx++;
+                        } else if (down && _settings_item_idx == 2) {
+                            // Move to bottom bar (Back button)
+                            _settings_menu_idx = 1;
+                        }
+                    } else {
+                        // On bottom bar
+                        if (up) {
+                            // Move back to options
+                            _settings_menu_idx = 0;
+                        }
                     }
                 } else if (left || right) {
-                    if (_settings_item_idx == 0 && _node_prefs) {
+                    if (_settings_menu_idx == 0 && _settings_item_idx == 0 && _node_prefs) {
                         // Adjust sleep timeout with left/right arrows
                         int current_idx = 4; // Default to 5min (300s)
                         
@@ -3459,28 +3471,29 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             _auto_off = 0;
                         }
                         
-                        // Save to persistent storage immediately (like GPS setting)
+                        // Save to persistent storage immediately
                         the_mesh.savePrefs();
                         
                         Serial.printf("[Screen] Timeout changed to %u seconds (saved to SPIFFS)\n", _node_prefs->screen_timeout_seconds);
-                    } else {
-                        // In bottom bar, toggle between Save (0) and Back (1)
-                        _settings_menu_idx = (_settings_menu_idx == 0) ? 1 : 0;
                     }
                 } else if (select) {
-                    if (_settings_item_idx == 1) {
-                        // Factory Reset selected - show confirmation
-                        _show_factory_reset_confirm = true;
-                        _settings_menu_idx = 0; // Start on "Yes"
-                    } else if (_settings_item_idx == -1) {
-                        // In bottom bar - return to main menu (changes are saved immediately)
-                        _settings_category = SettingsCategory::MAIN_MENU;
-                        _settings_menu_idx = 0;
-                        _settings_item_idx = 0;
+                    if (_settings_menu_idx == 0) {
+                        // Options selected
+                        if (_settings_item_idx == 0) {
+                            // Sleep timeout - do nothing (changed with left/right)
+                        } else if (_settings_item_idx == 1) {
+                            // Factory Reset selected - show confirmation
+                            _show_factory_reset_confirm = true;
+                            _settings_menu_idx = 0; // Start on "Yes"
+                        } else if (_settings_item_idx == 2) {
+                            // Support the project - show QR code
+                            _show_qr_code = true;
+                        }
                     } else {
-                        // On Sleep option - go to bottom bar
+                        // Back button selected
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 3; // Return to "Other" in main menu
                         _settings_menu_idx = 0;
-                        _settings_item_idx = -1;
                     }
                 }
                 
@@ -3569,8 +3582,194 @@ void UITask::filterDisplayText(const char* input, char* output, int max_len) {
     while (input[in_idx] != '\0' && out_idx < max_len - 1) {
         unsigned char c = (unsigned char)input[in_idx];
         
-        // Handle UTF-8 sequences (emojis and special characters) - skip them
-        if (c >= 0x80) {
+        // Handle 2-byte UTF-8 sequences (most European diacritics)
+        if (c == 0xC4 || c == 0xC5) {
+            unsigned char next = (unsigned char)input[in_idx + 1];
+            const char* replacement = nullptr;
+            
+            // Polish characters
+            if (c == 0xC4 && next == 0x85) replacement = "a";      // ą
+            else if (c == 0xC4 && next == 0x87) replacement = "c"; // ć
+            else if (c == 0xC4 && next == 0x99) replacement = "e"; // ę
+            else if (c == 0xC5 && next == 0x82) replacement = "l"; // ł
+            else if (c == 0xC5 && next == 0x84) replacement = "n"; // ń
+            else if (c == 0xC5 && next == 0x9B) replacement = "s"; // ś
+            else if (c == 0xC5 && next == 0xBA) replacement = "z"; // ź
+            else if (c == 0xC5 && next == 0xBC) replacement = "z"; // ż
+            else if (c == 0xC4 && next == 0x84) replacement = "A"; // Ą
+            else if (c == 0xC4 && next == 0x86) replacement = "C"; // Ć
+            else if (c == 0xC4 && next == 0x98) replacement = "E"; // Ę
+            else if (c == 0xC5 && next == 0x81) replacement = "L"; // Ł
+            else if (c == 0xC5 && next == 0x83) replacement = "N"; // Ń
+            else if (c == 0xC5 && next == 0x9A) replacement = "S"; // Ś
+            else if (c == 0xC5 && next == 0xB9) replacement = "Z"; // Ź
+            else if (c == 0xC5 && next == 0xBB) replacement = "Z"; // Ż
+            
+            // Czech, Slovak, Hungarian, Romanian
+            else if (c == 0xC4 && next == 0x8D) replacement = "c"; // č
+            else if (c == 0xC4 && next == 0x8F) replacement = "d"; // ď
+            else if (c == 0xC4 && next == 0x9B) replacement = "e"; // ě
+            else if (c == 0xC5 && next == 0x99) replacement = "r"; // ř
+            else if (c == 0xC5 && next == 0xA1) replacement = "s"; // š
+            else if (c == 0xC5 && next == 0xA5) replacement = "t"; // ť
+            else if (c == 0xC5 && next == 0xBE) replacement = "z"; // ž
+            else if (c == 0xC4 && next == 0x83) replacement = "a"; // ă
+            else if (c == 0xC5 && next == 0x91) replacement = "o"; // ő
+            else if (c == 0xC5 && next == 0xB1) replacement = "u"; // ű
+            else if (c == 0xC4 && next == 0x8C) replacement = "C"; // Č
+            else if (c == 0xC4 && next == 0x8E) replacement = "D"; // Ď
+            else if (c == 0xC4 && next == 0x9A) replacement = "E"; // Ě
+            else if (c == 0xC5 && next == 0x98) replacement = "R"; // Ř
+            else if (c == 0xC5 && next == 0xA0) replacement = "S"; // Š
+            else if (c == 0xC5 && next == 0xA4) replacement = "T"; // Ť
+            else if (c == 0xC5 && next == 0xBD) replacement = "Z"; // Ž
+            else if (c == 0xC4 && next == 0x82) replacement = "A"; // Ă
+            else if (c == 0xC5 && next == 0x90) replacement = "O"; // Ő
+            else if (c == 0xC5 && next == 0xB0) replacement = "U"; // Ű
+            
+            if (replacement != nullptr) {
+                while (*replacement && out_idx < max_len - 1) {
+                    output[out_idx++] = *replacement++;
+                }
+                in_idx += 2;
+            } else {
+                in_idx += 2; // Skip unknown sequence
+            }
+        }
+        // C3 prefix: Latin diacritics, German umlauts, etc.
+        else if (c == 0xC3) {
+            unsigned char next = (unsigned char)input[in_idx + 1];
+            const char* replacement = nullptr;
+            
+            // Lowercase
+            if (next == 0xA0 || next == 0xA1 || next == 0xA2 || next == 0xA3 || next == 0xA4 || next == 0xA5) replacement = "a"; // à á â ã ä å
+            else if (next == 0xA7) replacement = "c"; // ç
+            else if (next == 0xA8 || next == 0xA9 || next == 0xAA || next == 0xAB) replacement = "e"; // è é ê ë
+            else if (next == 0xAC || next == 0xAD || next == 0xAE || next == 0xAF) replacement = "i"; // ì í î ï
+            else if (next == 0xB1) replacement = "n"; // ñ
+            else if (next == 0xB2 || next == 0xB3 || next == 0xB4 || next == 0xB5 || next == 0xB6 || next == 0xB8) replacement = "o"; // ò ó ô õ ö ø
+            else if (next == 0xB9 || next == 0xBA || next == 0xBB || next == 0xBC) replacement = "u"; // ù ú û ü
+            else if (next == 0xBD || next == 0xBF) replacement = "y"; // ý ÿ
+            else if (next == 0xA6) replacement = "ae"; // æ
+            else if (next == 0xB0) replacement = "d"; // ð (Icelandic)
+            else if (next == 0x9F) replacement = "ss"; // ß (German)
+            
+            // Uppercase
+            else if (next == 0x80 || next == 0x81 || next == 0x82 || next == 0x83 || next == 0x84 || next == 0x85) replacement = "A"; // À Á Â Ã Ä Å
+            else if (next == 0x87) replacement = "C"; // Ç
+            else if (next == 0x88 || next == 0x89 || next == 0x8A || next == 0x8B) replacement = "E"; // È É Ê Ë
+            else if (next == 0x8C || next == 0x8D || next == 0x8E || next == 0x8F) replacement = "I"; // Ì Í Î Ï
+            else if (next == 0x91) replacement = "N"; // Ñ
+            else if (next == 0x92 || next == 0x93 || next == 0x94 || next == 0x95 || next == 0x96 || next == 0x98) replacement = "O"; // Ò Ó Ô Õ Ö Ø
+            else if (next == 0x99 || next == 0x9A || next == 0x9B || next == 0x9C) replacement = "U"; // Ù Ú Û Ü
+            else if (next == 0x9D) replacement = "Y"; // Ý
+            else if (next == 0x86) replacement = "AE"; // Æ
+            else if (next == 0x90) replacement = "D"; // Ð (Icelandic)
+            
+            if (replacement != nullptr) {
+                while (*replacement && out_idx < max_len - 1) {
+                    output[out_idx++] = *replacement++;
+                }
+                in_idx += 2;
+            } else {
+                in_idx += 2; // Skip unknown sequence
+            }
+        }
+        // C4 prefix continued (more diacritics)
+        else if (c == 0xC4) {
+            unsigned char next = (unsigned char)input[in_idx + 1];
+            const char* replacement = nullptr;
+            
+            // German umlauts (already handled above but for clarity)
+            // Turkish and other special cases handled in C4/C5 section above
+            
+            if (replacement != nullptr) {
+                while (*replacement && out_idx < max_len - 1) {
+                    output[out_idx++] = *replacement++;
+                }
+                in_idx += 2;
+            } else {
+                in_idx += 2;
+            }
+        }
+        // C8 prefix: Turkish ş, Romanian ș ț, etc.
+        else if (c == 0xC8) {
+            unsigned char next = (unsigned char)input[in_idx + 1];
+            const char* replacement = nullptr;
+            
+            if (next == 0x99) replacement = "s"; // ș (Romanian)
+            else if (next == 0x9B) replacement = "t"; // ț (Romanian)
+            else if (next == 0x98) replacement = "S"; // Ș
+            else if (next == 0x9A) replacement = "T"; // Ț
+            
+            if (replacement != nullptr) {
+                while (*replacement && out_idx < max_len - 1) {
+                    output[out_idx++] = *replacement++;
+                }
+                in_idx += 2;
+            } else {
+                in_idx += 2;
+            }
+        }
+        // C4 B0/B1: Turkish ı İ (already partially handled)
+        else if (c == 0xC4 && input[in_idx + 1] == 0xB1) {
+            output[out_idx++] = 'i'; // ı (Turkish dotless i)
+            in_idx += 2;
+        }
+        else if (c == 0xC4 && input[in_idx + 1] == 0xB0) {
+            output[out_idx++] = 'I'; // İ (Turkish dotted I)
+            in_idx += 2;
+        }
+        // C4 9F: Turkish ğ
+        else if (c == 0xC4 && input[in_idx + 1] == 0x9F) {
+            output[out_idx++] = 'g'; // ğ
+            in_idx += 2;
+        }
+        else if (c == 0xC4 && input[in_idx + 1] == 0x9E) {
+            output[out_idx++] = 'G'; // Ğ
+            in_idx += 2;
+        }
+        // C5 9F: Turkish ş
+        else if (c == 0xC5 && input[in_idx + 1] == 0x9F) {
+            output[out_idx++] = 's'; // ş
+            in_idx += 2;
+        }
+        else if (c == 0xC5 && input[in_idx + 1] == 0x9E) {
+            output[out_idx++] = 'S'; // Ş
+            in_idx += 2;
+        }
+        // C3 BE/C3 9E: Icelandic þ Þ
+        else if (c == 0xC3 && input[in_idx + 1] == 0xBE) {
+            if (out_idx + 2 < max_len) {
+                output[out_idx++] = 't';
+                output[out_idx++] = 'h'; // þ → th
+            }
+            in_idx += 2;
+        }
+        else if (c == 0xC3 && input[in_idx + 1] == 0x9E) {
+            if (out_idx + 2 < max_len) {
+                output[out_idx++] = 'T';
+                output[out_idx++] = 'H'; // Þ → TH
+            }
+            in_idx += 2;
+        }
+        // C5 92/93: œ Œ (French ligatures)
+        else if (c == 0xC5 && input[in_idx + 1] == 0x93) {
+            if (out_idx + 2 < max_len) {
+                output[out_idx++] = 'o';
+                output[out_idx++] = 'e'; // œ
+            }
+            in_idx += 2;
+        }
+        else if (c == 0xC5 && input[in_idx + 1] == 0x92) {
+            if (out_idx + 2 < max_len) {
+                output[out_idx++] = 'O';
+                output[out_idx++] = 'E'; // Œ
+            }
+            in_idx += 2;
+        }
+        // Handle other UTF-8 sequences (emojis and special characters) - skip them
+        else if (c >= 0x80) {
             // Skip UTF-8 multi-byte sequences completely
             if (c >= 0xF0) {
                 // 4-byte sequence (most emojis)
@@ -3579,7 +3778,7 @@ void UITask::filterDisplayText(const char* input, char* output, int max_len) {
                 // 3-byte sequence
                 in_idx += 3;
             } else if (c >= 0xC0) {
-                // 2-byte sequence
+                // 2-byte sequence (fallback for unhandled)
                 in_idx += 2;
             } else {
                 // Invalid sequence, skip 1 byte

@@ -1309,8 +1309,8 @@ void UITask::renderSettingsMenu() {
             _display->setColor(DisplayDriver::LIGHT);
             _display->drawRect(0, y, 240, 28);
             
-            // Fill white if selected
-            if (preset_idx == _settings_item_idx) {
+            // Fill white if selected (but not when Back button is selected)
+            if (preset_idx == _settings_item_idx && _settings_menu_idx != 1) {
                 _display->fillRect(0, y, 240, 28);
                 _display->setColor(DisplayDriver::DARK);
                 _display->setCursor(2, y + 7);
@@ -3337,10 +3337,11 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                 int num_presets = NUM_RADIO_PRESETS;
                 
                 if (up || down) {
-                    if (_settings_item_idx == -1) {
-                        // In bottom bar, go back to presets
+                    if (_settings_menu_idx == 1) {
+                        // In bottom bar (Back button), go back to presets
                         _settings_item_idx = num_presets - 1;
                         _radio_preset_scroll_pos = (_settings_item_idx > 2) ? _settings_item_idx - 2 : 0;
+                        _settings_menu_idx = 0;
                     } else {
                         // Navigate between presets with scrolling
                         if (up && _settings_item_idx > 0) {
@@ -3354,15 +3355,20 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                                 _radio_preset_scroll_pos = _settings_item_idx - 2;
                             }
                         } else if (down && _settings_item_idx == num_presets - 1) {
-                            // Go down to bottom bar
-                            _settings_item_idx = -1;
+                            // Go down to bottom bar (Back button)
+                            _settings_menu_idx = 1;
                         } else if (up && _settings_item_idx == 0) {
-                            // Wrap to bottom bar
-                            _settings_item_idx = -1;
+                            // Wrap to bottom bar (Back button)
+                            _settings_menu_idx = 1;
                         }
                     }
                 } else if (select) {
-                    if (_settings_item_idx >= 0 && _settings_item_idx < num_presets) {
+                    if (_settings_menu_idx == 1) {
+                        // Back button - return to Radio Setup
+                        _settings_category = SettingsCategory::RADIO_SETUP;
+                        _settings_item_idx = 1; // Return to "Choose preset" in Radio Setup
+                        _settings_menu_idx = 0;
+                    } else if (_settings_item_idx >= 0 && _settings_item_idx < num_presets) {
                         // Apply selected preset
                         const RadioPreset& preset = RADIO_PRESETS[_settings_item_idx];
                         
@@ -3401,10 +3407,6 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             delay(2000); // Show notification for 2 seconds
                             ESP.restart();
                         }
-                    } else {
-                        // Back button - return to Radio Setup
-                        _settings_category = SettingsCategory::RADIO_SETUP;
-                        _settings_item_idx = 0;
                     }
                 }
                 

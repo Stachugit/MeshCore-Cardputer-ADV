@@ -16,6 +16,33 @@ Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for
 
 ![MeshCore-Cardputer-ADV](docs/images/Imagecardp.png)
 
+## 📸 Screenshots
+
+<details>
+<summary>Click to view screenshots</summary>
+
+### Main Interface
+| Chat | Contacts | Channels |
+|------|----------|----------|
+| ![Chat](docs/images/Chat.bmp) | ![Contact](docs/images/Contact.bmp) | ![Channel](docs/images/Channel.bmp) |
+
+### Settings Menu
+| Main Settings | Public Info | Radio Setup |
+|---------------|-------------|-------------|
+| ![Settings](docs/images/Settings.bmp) | ![Public Info](docs/images/Publicinfo.bmp) | ![Radio Setup](docs/images/RadioSetup.bmp) |
+
+### Radio Configuration
+| Choose Preset | Manual Setup | Device Info |
+|---------------|--------------|-------------|
+| ![Choose Preset](docs/images/ChoosePreset.bmp) | ![Manual Setup](docs/images/ManualSetup.bmp) | ![Device Info](docs/images/DeviceInfo.bmp) |
+
+### Customization
+| Theme Settings | Other Options |
+|----------------|---------------|
+| ![Theme](docs/images/Theme.bmp) | ![Other](docs/images/Other.bmp) |
+
+</details>
+
 ## 📦 Installation Options
 
 ### Option 1: Web Flasher (⭐ Recommended)
@@ -42,7 +69,7 @@ Download `firmware_Cap_LoRa-1262.bin` from [Releases](https://github.com/Stachug
 Simply attach the Cap LoRa-1262 to your Cardputer-Adv - no wiring needed!
 - **Module**: RA-01SH (SX1262)
 - **Frequency**: 863-870 MHz
-- **Documentation**: [Cap LoRa-1262](https://docs.m5stack.com/en/cap/Cap_LoRa868)
+- **Documentation**: [Cap LoRa-1262](https://docs.m5stack.com/en/cap/Cap_LoRa-1262)
 
 ## ✨ Features
 
@@ -160,7 +187,7 @@ Contributions welcome! Report bugs, suggest features, submit pull requests, or i
 - **Web Flasher**: https://meshcorecardputeradv.vercel.app/
 - **Original MeshCore**: https://github.com/meshcore-dev/MeshCore
 - **M5Stack Cardputer-ADV**: https://shop.m5stack.com/products/m5stack-cardputer-adv-version-esp32-s3
-- **Cap LoRa-1262**: https://docs.m5stack.com/en/cap/Cap_LoRa868
+- **Cap LoRa-1262**: https://docs.m5stack.com/en/cap/Cap_LoRa-1262
 - **Support Development**: https://buymeacoffee.com/Stachu
 
 ## ⚠️ Disclaimer

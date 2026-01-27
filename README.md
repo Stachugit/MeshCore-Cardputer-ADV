@@ -127,7 +127,7 @@ git clone https://github.com/Stachugit/MeshCore-Cardputer-ADV.git
 cd MeshCore-Cardputer-ADV
 
 # For Cap LoRa-1262:
-pio run -e CardputerADV_keyboard_UI_Cap_LoRa868 --target upload
+pio run -e M5stack_cardputer_cap_lora1262_companion --target upload
 ```
 
 ## 🙏 Credits

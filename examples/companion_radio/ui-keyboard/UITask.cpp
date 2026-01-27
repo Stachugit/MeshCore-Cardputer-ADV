@@ -54,7 +54,7 @@ UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
       _scroll_pos(0), _selected_idx(0), _chat_is_channel(false),
       _chat_history_count(0), _chat_scroll(0), _notification_expiry(0), _has_notification(false),
       _chat_msg_scroll_index(0), _search_filter_length(0), _backspace_hold_start(0), _backspace_was_held(false),
-      _last_backspace_delete(0),
+      _last_backspace_delete(0), _delete_processed(false),
       _settings_selected(false), _settings_category(SettingsCategory::MAIN_MENU), _settings_menu_idx(0), _settings_item_idx(0), _settings_scroll_pos(0), _public_info_scroll_pos(0), _radio_preset_scroll_pos(0), _radio_setup_scroll_pos(0),
       _editing_name(false), _show_qr_code(false), _edit_buffer_length(0),
       _editing_frequency(false), _editing_bandwidth(false), _editing_spreading_factor(false), _editing_coding_rate(false), _editing_tx_power(false), _manual_setup_step(-1),
@@ -2668,7 +2668,11 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
         // Check for FN+DEL combination first (delete contact/channel)
         // FN modifier is in status.fn, DEL key (BACKSPACE) is in status.del
         if (status.fn && status.del) {
-            if (_menu_state == MenuScreen::CONTACTS) {
+            // Only process deletion once per key press (not continuously on hold)
+            if (!_delete_processed) {
+                _delete_processed = true;
+                
+                if (_menu_state == MenuScreen::CONTACTS) {
                 // Get current selected contact (account for filtering)
                 int num_contacts = the_mesh.getNumContacts();
                 int contact_to_delete_idx = -1;
@@ -2730,8 +2734,94 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
                         }
                     }
                 }
+                } else if (_menu_state == MenuScreen::CHANNELS) {
+                    // Get current selected channel (account for filtering)
+                    int num_channels = 0;
+                    ChannelDetails channels[MAX_GROUP_CHANNELS];
+                    int channel_mesh_idx[MAX_GROUP_CHANNELS];
+                    
+                    // Build channel list
+                    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+                        if (the_mesh.getChannel(i, channels[num_channels]) && channels[num_channels].name[0] != '\0') {
+                            channel_mesh_idx[num_channels] = i;
+                            num_channels++;
+                        }
+                    }
+                    
+                    int channel_to_delete_idx = -1;
+                    
+                    // Build filtered list if search is active
+                    if (_search_filter_length > 0) {
+                        int filtered_indices[MAX_GROUP_CHANNELS];
+                        int filtered_count = 0;
+                        for (int i = 0; i < num_channels; i++) {
+                            char lower_name[32];
+                            char lower_filter[32];
+                            for (int j = 0; j < 32 && channels[i].name[j]; j++) {
+                                lower_name[j] = tolower(channels[i].name[j]);
+                                lower_name[j+1] = '\0';
+                            }
+                            for (int j = 0; j < 32 && _search_filter[j]; j++) {
+                                lower_filter[j] = tolower(_search_filter[j]);
+                                lower_filter[j+1] = '\0';
+                            }
+                            if (strstr(lower_name, lower_filter) != nullptr) {
+                                filtered_indices[filtered_count++] = i;
+                            }
+                        }
+                        if (filtered_count > 0 && _selected_idx < filtered_count) {
+                            channel_to_delete_idx = filtered_indices[_selected_idx];
+                        }
+                    } else {
+                        // No filter - use direct index
+                        if (num_channels > 0 && _selected_idx < num_channels) {
+                            channel_to_delete_idx = _selected_idx;
+                        }
+                    }
+                    
+                    // Delete channel immediately
+                    if (channel_to_delete_idx >= 0) {
+                        ChannelDetails channel_to_del = channels[channel_to_delete_idx];
+                        int mesh_idx = channel_mesh_idx[channel_to_delete_idx];
+                        
+                        // Clear the channel by setting empty name
+                        ChannelDetails empty_channel;
+                        empty_channel.name[0] = '\0';
+                        memset(&empty_channel.channel, 0, sizeof(empty_channel.channel));
+                        the_mesh.setChannel(mesh_idx, empty_channel);
+                        the_mesh.saveChannels();
+                        
+                        // Show notification
+                        char notif_msg[64];
+                        snprintf(notif_msg, sizeof(notif_msg), "Deleted: %s", channel_to_del.name);
+                        strncpy(_notification_text, notif_msg, 127);
+                        _notification_text[127] = '\0';
+                        _notification_expiry = millis() + 1500;
+                        _has_notification = true;
+                        
+                        // Recount channels after deletion
+                        num_channels = 0;
+                        for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+                            ChannelDetails temp_ch;
+                            if (the_mesh.getChannel(i, temp_ch) && temp_ch.name[0] != '\0') {
+                                num_channels++;
+                            }
+                        }
+                        
+                        // Adjust selection
+                        if (_selected_idx >= num_channels && num_channels > 0) {
+                            _selected_idx = num_channels - 1;
+                        }
+                        if (_selected_idx < _scroll_pos) {
+                            _scroll_pos = _selected_idx;
+                        }
+                    }
+                }
             }
             return;
+        } else {
+            // Reset flag when keys are released
+            _delete_processed = false;
         }
         
         // Check if this is navigation input (FN + keys or direct navigation keys)
@@ -3108,11 +3198,13 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                         _settings_item_idx = 0;
                         _settings_menu_idx = 0;
                     } else {
-                        // Back button - return to contacts
+                        // Back button - return to contacts with first contact selected
                         _menu_state = MenuScreen::CONTACTS;
                         _settings_category = SettingsCategory::MAIN_MENU;
                         _settings_item_idx = 0;
                         _settings_menu_idx = 0;
+                        _selected_idx = 0; // Select first contact
+                        _settings_selected = false;
                     }
                 }
                 

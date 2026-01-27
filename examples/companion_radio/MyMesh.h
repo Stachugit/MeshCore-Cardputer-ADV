@@ -159,6 +159,7 @@ public:
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
   void factoryReset() { _store->formatFileSystem(); }
   void saveContacts() { _store->saveContacts(this); }
+  void saveChannels() { _store->saveChannels(this); }
 
 private:
   void writeOKFrame();
@@ -177,9 +178,6 @@ private:
 
   void checkCLIRescueCmd();
   void checkSerialInterface();
-
-  // helpers, short-cuts
-  void saveChannels() { _store->saveChannels(this); }
 
   DataStore* _store;
   NodePrefs _prefs;

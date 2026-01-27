@@ -136,6 +136,9 @@ private:
     bool _backspace_was_held;
     unsigned long _last_backspace_delete; // For fast repeat deletion
     
+    // Deletion tracking (to prevent repeated deletions on key hold)
+    bool _delete_processed;
+    
     // Settings icon selection
     bool _settings_selected;
     SettingsCategory _settings_category; // Current settings category

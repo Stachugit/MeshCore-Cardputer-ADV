@@ -4,7 +4,7 @@
 
 Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for M5Stack Cardputer-Adv.
 
-![MeshCore-Cardputer-ADV](docs/images/title.JPG)
+![MeshCore-Cardputer-ADV](docs/images/Imagecardp.png)
 
 ## 📦 Installation via M5Burner
 

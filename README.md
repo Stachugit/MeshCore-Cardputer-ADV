@@ -44,16 +44,16 @@ Simply attach the Cap LoRa-1262 to your Cardputer-Adv - no wiring needed!
 - **Real-time search** in contacts and channels
 
 ### Keyboard Controls
-- **<span style="color: #ff8800;">↑</span>** - Up
-- **<span style="color: #ff8800;">↓</span>** - Down
-- **<span style="color: #ff8800;">←</span>** - Contacts
-- **<span style="color: #ff8800;">→</span>** - Channels
+- **🟠 ↑** - Up
+- **🟠 ↓** - Down
+- **🟠 ←** - Contacts
+- **🟠 →** - Channels
 - **Enter** - Send/Select
 - **Backspace** - Delete | **Hold Backspace** - Clear all
-- **<span style="color: #ff8800;">FN+ESC</span>** - Go back
+- **🟠 FN+ESC** - Go back
 - **Opt** - Go back
-- **<span style="color: #ff8800;">FN+↑</span>** / **<span style="color: #ff8800;">FN+↓</span>** - Scroll messages (in writing mode)
-- **<span style="color: #ff8800;">FN+DEL</span>** - Delete contacts/channels
+- **🟠 FN+↑** / **🟠 FN+↓** - Scroll messages (in writing mode)
+- **🟠 FN+DEL** - Delete contacts/channels
 
 ### Settings Menu (☰)
 

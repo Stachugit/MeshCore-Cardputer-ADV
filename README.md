@@ -2,25 +2,36 @@
 
 [![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=Stachu&button_colour=ff8800&font_colour=000000&font_family=Lato&outline_colour=000000&coffee_colour=FFDD00)](https://buymeacoffee.com/Stachu)
 
-## 🌐 Quick Flash via Web Flasher
-**[Flash Firmware Online →](https://meshcorecardputeradv.vercel.app/)**
+## 🌐 Quick Flash via Web Flasher (Recommended)
 
-No installation needed! Flash directly from your browser.
+### **[⚡ Flash Firmware Online →](https://meshcorecardputeradv.vercel.app/)**
+
+✅ **No installation needed!** Flash directly from your browser  
+✅ **Preserves your settings** - keeps all your data intact  
+✅ **Fast and easy** - just connect and click
 
 ---
 
-Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for M5Stack Cardputer-Adv with Cap LoRa868.
+Enhanced TFT user interface for MeshCore mesh networking firmware, optimized for M5Stack Cardputer-Adv with Cap LoRa-1262.
 
 ![MeshCore-Cardputer-ADV](docs/images/Imagecardp.png)
 
 ## 📦 Installation Options
 
-### Option 1: Web Flasher (Recommended)
-Visit **[https://meshcorecardputeradv.vercel.app/](https://meshcorecardputeradv.vercel.app/)** and flash directly from your browser - no software installation required!
+### Option 1: Web Flasher (⭐ Recommended)
+Visit **[https://meshcorecardputeradv.vercel.app/](https://meshcorecardputeradv.vercel.app/)** and flash directly from your browser!
+
+**Why use the Web Flasher?**
+- ✅ No software installation required
+- ✅ Preserves all your settings and data
+- ✅ Fastest and easiest method
+- ✅ Works on any modern browser
 
 ### Option 2: M5Burner
 Search in M5Burner for:
-- `MeshCore-Cardputer-ADV M5Stack Cap LoRa-1262 version!!!!` - **Plug-and-play**
+- `MeshCore-Cardputer-ADV M5Stack Cap LoRa1262 version!!!!` - **Plug-and-play**
+
+⚠️ **WARNING**: Flashing with M5Burner will erase all data from your device, including settings, contacts, and channels. Use the Web Flasher to preserve your data.
 
 ### Option 3: Pre-compiled Binary
 Download `firmware_Cap_LoRa-1262.bin` from [Releases](https://github.com/Stachugit/MeshCore-Cardputer-ADV/releases) and flash using esptool.py or ESP Flash Download Tool.
@@ -31,7 +42,7 @@ Download `firmware_Cap_LoRa-1262.bin` from [Releases](https://github.com/Stachug
 Simply attach the Cap LoRa-1262 to your Cardputer-Adv - no wiring needed!
 - **Module**: RA-01SH (SX1262)
 - **Frequency**: 863-870 MHz
-- **Documentation**: [Cap LoRa-1262](https://docs.m5stack.com/en/cap/Cap_LoRa-1262)
+- **Documentation**: [Cap LoRa-1262](https://docs.m5stack.com/en/cap/Cap_LoRa868)
 
 ## ✨ Features
 

@@ -92,6 +92,7 @@ Simply attach the Cap LoRa-1262 to your Cardputer-Adv - no wiring needed!
 - **Opt** - Go back
 - **🟠 FN+↑** / **🟠 FN+↓** - Scroll messages (in writing mode)
 - **🟠 FN+DEL** - Delete contacts/channels
+- **G0(Top right button)** - Send an advert
 
 ### Settings Menu (☰)
 

@@ -2,6 +2,7 @@
 #include "target.h"
 
 M5CardputerBoard board;
+m5::PI4IOE5V6408_Class ioe(0x43, 400000, &m5::In_I2C);;
 
 static SPIClass spi;
 RADIO_CLASS radio = new Module(P_LORA_NSS, P_LORA_DIO_1, P_LORA_RESET, P_LORA_BUSY, spi, SPISettings());
@@ -189,6 +190,13 @@ SensorManager sensors;
 bool radio_init() {
   fallback_clock.begin();
   rtc_clock.begin(Wire);
+
+  if (ioe.begin()) {
+    Serial.printf("Using Cap LoRa-1262\n");
+    ioe.setDirection(0, true);      // Output
+    ioe.setHighImpedance(0, false); // Disable high-impedance so pin can actually drive
+    ioe.digitalWrite(0, true);      // High Level
+  }
   
   // Hardware reset sequence for LoRa module
   // This ensures proper initialization even if module is connected after power-on

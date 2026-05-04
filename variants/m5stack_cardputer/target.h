@@ -5,6 +5,7 @@
 #include <helpers/radiolib/RadioLibWrappers.h>
 #include <helpers/radiolib/CustomSX1262Wrapper.h>
 #include <M5CardputerBoard.h>
+#include <utility/PI4IOE5V6408_Class.hpp>
 #include <helpers/AutoDiscoverRTCClock.h>
 #include <helpers/SensorManager.h>
 #ifdef HAS_GPS
@@ -39,6 +40,8 @@ public:
 extern M5CardputerBoard board;
 extern WRAPPER_CLASS radio_driver;
 extern AutoDiscoverRTCClock rtc_clock;
+extern m5::PI4IOE5V6408_Class ioe;
+
 #ifdef HAS_GPS
 extern CardputerSensorManager sensors;
 #else

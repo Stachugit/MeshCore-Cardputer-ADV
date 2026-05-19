@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include "target.h"
+#ifdef HAS_GPS
+#include "../../examples/companion_radio/NodePrefs.h"
+#endif
 
 M5CardputerBoard board;
 
@@ -147,23 +150,6 @@ bool CardputerSensorManager::setSettingValue(const char* name, const char* value
     
     // Sync with NodePrefs
     if (_node_prefs) {
-      struct NodePrefs { 
-        uint8_t airtime_factor;
-        char node_name[32];
-        float freq; uint8_t sf; uint8_t cr;
-        uint8_t multi_acks;
-        uint8_t manual_add_contacts;
-        float bw;
-        uint8_t tx_power_dbm;
-        uint8_t telemetry_mode_base;
-        uint8_t telemetry_mode_loc;
-        uint8_t telemetry_mode_env;
-        uint8_t rx_delay_base;
-        uint32_t ble_pin;
-        uint8_t advert_loc_policy;
-        uint8_t buzzer_quiet;
-        uint8_t gps_enabled;
-      };
       NodePrefs* prefs = (NodePrefs*)_node_prefs;
       prefs->gps_enabled = should_enable ? 1 : 0;
       Serial.printf("[GPS] Updated NodePrefs: gps_enabled=%d\n", prefs->gps_enabled);

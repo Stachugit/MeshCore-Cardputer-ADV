@@ -333,9 +333,9 @@ void UITask::renderContactList() {
     int num_contacts = the_mesh.getNumContacts();
     
     // Filter contacts by search term
-    int filtered_indices[64];
+    int filtered_indices[MAX_CONTACTS];
     int filtered_count = 0;
-    
+
     if (_search_filter_length > 0) {
         for (int i = 0; i < num_contacts; i++) {
             ContactInfo contact;
@@ -351,7 +351,7 @@ void UITask::renderContactList() {
                     lower_filter[j] = tolower(_search_filter[j]);
                     lower_filter[j+1] = '\0';
                 }
-                if (strstr(lower_name, lower_filter) != nullptr) {
+                if (strstr(lower_name, lower_filter) != nullptr && filtered_count < MAX_CONTACTS) {
                     filtered_indices[filtered_count++] = i;
                 }
             }
@@ -359,10 +359,10 @@ void UITask::renderContactList() {
         num_contacts = filtered_count;
     } else {
         // No filter - show all
-        for (int i = 0; i < num_contacts; i++) {
+        for (int i = 0; i < num_contacts && i < MAX_CONTACTS; i++) {
             filtered_indices[i] = i;
         }
-        filtered_count = num_contacts;
+        filtered_count = num_contacts < MAX_CONTACTS ? num_contacts : MAX_CONTACTS;
     }
     
     if (num_contacts == 0) {

@@ -55,7 +55,8 @@ static const RadioPreset RADIO_PRESETS[] = {
     {"EU / UK (Narrow)", 869.618f, 8, 62.5f, 8},
     {"EU / UK (Long Rng)", 869.525f, 11, 250.0f, 5},
     {"EU / UK (Med Rng)", 869.525f, 10, 250.0f, 5},
-    {"Czech Rep (Narrow)", 869.432f, 7, 62.5f, 5}
+    {"Czech Rep (Narrow)", 869.432f, 7, 62.5f, 5},
+    {"Slovakia", 869.618f, 8, 62.5f, 5}
 };
 #define NUM_RADIO_PRESETS 14
 

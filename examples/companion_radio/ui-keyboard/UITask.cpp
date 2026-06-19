@@ -3700,26 +3700,34 @@ void UITask::filterDisplayText(const char* input, char* output, int max_len) {
             else if (c == 0xC5 && next == 0xBB) replacement = "Z"; // Ż
             
             // Czech, Slovak, Hungarian, Romanian
+            else if (c == 0xC4 && next == 0x83) replacement = "a"; // ă
             else if (c == 0xC4 && next == 0x8D) replacement = "c"; // č
             else if (c == 0xC4 && next == 0x8F) replacement = "d"; // ď
             else if (c == 0xC4 && next == 0x9B) replacement = "e"; // ě
+            else if (c == 0xC4 && next == 0xBE) replacement = "l"; // ľ
+            else if (c == 0xC4 && next == 0xBA) replacement = "l"; // ĺ
+            else if (c == 0xC5 && next == 0x91) replacement = "o"; // ő
             else if (c == 0xC5 && next == 0x99) replacement = "r"; // ř
+            else if (c == 0xC5 && next == 0x95) replacement = "r"; // ŕ
             else if (c == 0xC5 && next == 0xA1) replacement = "s"; // š
             else if (c == 0xC5 && next == 0xA5) replacement = "t"; // ť
-            else if (c == 0xC5 && next == 0xBE) replacement = "z"; // ž
-            else if (c == 0xC4 && next == 0x83) replacement = "a"; // ă
-            else if (c == 0xC5 && next == 0x91) replacement = "o"; // ő
             else if (c == 0xC5 && next == 0xB1) replacement = "u"; // ű
+            else if (c == 0xC5 && next == 0xAF) replacement = "u"; // ů
+            else if (c == 0xC5 && next == 0xBE) replacement = "z"; // ž
+            else if (c == 0xC4 && next == 0x82) replacement = "A"; // Ă
             else if (c == 0xC4 && next == 0x8C) replacement = "C"; // Č
             else if (c == 0xC4 && next == 0x8E) replacement = "D"; // Ď
             else if (c == 0xC4 && next == 0x9A) replacement = "E"; // Ě
+            else if (c == 0xC4 && next == 0xBD) replacement = "L"; // Ľ
+            else if (c == 0xC4 && next == 0xB9) replacement = "L"; // Ĺ
+            else if (c == 0xC5 && next == 0x90) replacement = "O"; // Ő
             else if (c == 0xC5 && next == 0x98) replacement = "R"; // Ř
+            else if (c == 0xC5 && next == 0x94) replacement = "R"; // Ŕ
             else if (c == 0xC5 && next == 0xA0) replacement = "S"; // Š
             else if (c == 0xC5 && next == 0xA4) replacement = "T"; // Ť
-            else if (c == 0xC5 && next == 0xBD) replacement = "Z"; // Ž
-            else if (c == 0xC4 && next == 0x82) replacement = "A"; // Ă
-            else if (c == 0xC5 && next == 0x90) replacement = "O"; // Ő
             else if (c == 0xC5 && next == 0xB0) replacement = "U"; // Ű
+            else if (c == 0xC5 && next == 0xAE) replacement = "U"; // Ů
+            else if (c == 0xC5 && next == 0xBD) replacement = "Z"; // Ž
             
             if (replacement != nullptr) {
                 while (*replacement && out_idx < max_len - 1) {

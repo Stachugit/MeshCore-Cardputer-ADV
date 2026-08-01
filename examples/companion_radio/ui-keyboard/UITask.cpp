@@ -46,6 +46,11 @@ protected:
 
 extern MyMesh the_mesh;
 
+static void clearSensitiveText(char* text, size_t length) {
+    volatile char* cursor = text;
+    while (length--) *cursor++ = 0;
+}
+
 UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
     : AbstractUITask(board, serial_interface), _display(nullptr),
       _menu_state(MenuScreen::CONTACTS), _next_refresh(0), _auto_off(0),
@@ -57,6 +62,7 @@ UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
       _last_backspace_delete(0), _delete_processed(false),
       _settings_selected(false), _settings_category(SettingsCategory::MAIN_MENU), _settings_menu_idx(0), _settings_item_idx(0), _settings_scroll_pos(0), _public_info_scroll_pos(0), _radio_preset_scroll_pos(0), _radio_setup_scroll_pos(0),
       _editing_name(false), _show_qr_code(false), _edit_buffer_length(0),
+      _backup_password_mode(BackupPasswordMode::NONE),
       _editing_frequency(false), _editing_bandwidth(false), _editing_spreading_factor(false), _editing_coding_rate(false), _editing_tx_power(false), _manual_setup_step(-1),
       _show_factory_reset_confirm(false),
       _brightness(128), _main_color_idx(0), _secondary_color_idx(1) {
@@ -64,6 +70,7 @@ UITask::UITask(mesh::MainBoard* board, BaseSerialInterface* serial_interface)
     _input_buffer[0] = '\0';
     _search_filter[0] = '\0';
     _edit_buffer[0] = '\0';
+    _backup_passphrase[0] = '\0';
     _notification_from[0] = '\0';
     _notification_text[0] = '\0';
     _last_read_channel[0] = '\0';
@@ -216,6 +223,11 @@ void UITask::loop() {
                     _selected_idx = 0;
                     _need_refresh = true;
                 } else if (_menu_state == MenuScreen::SETTINGS && _editing_name && _edit_buffer_length > 0) {
+                    _edit_buffer_length--;
+                    _edit_buffer[_edit_buffer_length] = '\0';
+                    _need_refresh = true;
+                } else if (_menu_state == MenuScreen::SETTINGS &&
+                           _backup_password_mode != BackupPasswordMode::NONE && _edit_buffer_length > 0) {
                     _edit_buffer_length--;
                     _edit_buffer[_edit_buffer_length] = '\0';
                     _need_refresh = true;
@@ -959,6 +971,31 @@ void UITask::renderSettingsMenu() {
     // Clear screen background (reduces flicker vs clearing every frame)
     _display->setColor(DisplayDriver::DARK);
     _display->fillRect(0, 0, 240, 135);
+
+    if (_backup_password_mode != BackupPasswordMode::NONE) {
+        const char* title = _backup_password_mode == BackupPasswordMode::BACKUP_CONFIRM
+            ? "Confirm password" : "Backup password";
+        const char* action = _backup_password_mode == BackupPasswordMode::RESTORE_ENTER
+            ? "Decrypt and restore" : "Encrypt full backup";
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->setTextSize(2);
+        _display->setCursor(8, 8);
+        _display->print(title);
+        _display->setTextSize(1);
+        _display->setCursor(8, 34);
+        _display->print(action);
+        _display->drawRect(8, 51, 224, 31);
+        _display->setTextSize(2);
+        _display->setCursor(14, 59);
+        int shown = min(_edit_buffer_length, 24);
+        for (int i = 0; i < shown; ++i) _display->print("*");
+        _display->setTextSize(1);
+        _display->setCursor(8, 91);
+        _display->print("Minimum 8 characters");
+        _display->setCursor(8, 119);
+        _display->print("Enter: continue   Opt: cancel");
+        return;
+    }
     
     // Header bar (0, 0, 240, 28) - similar to main menu
     _display->setColor(DisplayDriver::LIGHT);
@@ -975,8 +1012,8 @@ void UITask::renderSettingsMenu() {
         _display->print("Settings");
         
         // Show categories list (max 3 visible at once, like contact/channel lists)
-        const char* categories[] = {"Public Info", "Radio Setup", "Theme", "Other", "Device Info"};
-        int num_categories = 5;
+        const char* categories[] = {"Public Info", "Radio Setup", "Theme", "Other", "Device Info", "SD Backup"};
+        int num_categories = 6;
         
         // Render 3 category items (y: 27, 54, 81)
         int y_positions[3] = {27, 54, 81};
@@ -1326,6 +1363,27 @@ void UITask::renderSettingsMenu() {
             _display->print(RADIO_PRESETS[preset_idx].name);
         }
         
+    } else if (_settings_category == SettingsCategory::SD_BACKUP) {
+        _display->setCursor(72, 7);
+        _display->print("SD Backup");
+
+        const char* options[] = {"Encrypted backup", "Full restore"};
+        int y_positions[2] = {35, 70};
+        for (int i = 0; i < 2; ++i) {
+            int y = y_positions[i];
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->drawRect(0, y, 240, 29);
+            if (_settings_item_idx == i && _settings_menu_idx != 1) {
+                _display->fillRect(0, y, 240, 29);
+                _display->setColor(DisplayDriver::DARK);
+                _display->setCursor(2, y + 7);
+                _display->setTextSize(2);
+                _display->print(">");
+            }
+            _display->setTextSize(2);
+            _display->setCursor(16, y + 7);
+            _display->print(options[i]);
+        }
     } else if (_settings_category == SettingsCategory::DEVICE_INFO) {
         _display->setCursor(67, 7);
         _display->print("Device Info");
@@ -2060,6 +2118,126 @@ void UITask::renderNotification() {
     _display->print(hint);
 }
 void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
+    if (_menu_state == MenuScreen::SETTINGS && _backup_password_mode != BackupPasswordMode::NONE) {
+        auto finishPasswordEntry = [this]() {
+            clearSensitiveText(_backup_passphrase, sizeof(_backup_passphrase));
+            clearSensitiveText(_edit_buffer, sizeof(_edit_buffer));
+            _edit_buffer_length = 0;
+            _backup_password_mode = BackupPasswordMode::NONE;
+            _backspace_hold_start = 0;
+            _backspace_was_held = false;
+        };
+        auto showBackupMessage = [this](const char* message) {
+            strncpy(_notification_from, "Encrypted backup", sizeof(_notification_from) - 1);
+            _notification_from[sizeof(_notification_from) - 1] = '\0';
+            strncpy(_notification_text, message, sizeof(_notification_text) - 1);
+            _notification_text[sizeof(_notification_text) - 1] = '\0';
+            _notification_expiry = millis() + 2500;
+            _has_notification = true;
+        };
+
+        if (status.opt) {
+            finishPasswordEntry();
+            return;
+        }
+        if (status.del) {
+            if (_backspace_hold_start == 0) {
+                _backspace_hold_start = millis();
+                _backspace_was_held = false;
+            }
+            if (_edit_buffer_length > 0) {
+                _edit_buffer[--_edit_buffer_length] = '\0';
+            }
+            return;
+        }
+        if (status.enter) {
+            if (_edit_buffer_length < 8) {
+                showBackupMessage("Use at least 8 characters");
+                return;
+            }
+            if (_backup_password_mode == BackupPasswordMode::BACKUP_ENTER) {
+                memcpy(_backup_passphrase, _edit_buffer, _edit_buffer_length + 1);
+                clearSensitiveText(_edit_buffer, sizeof(_edit_buffer));
+                _edit_buffer_length = 0;
+                _backup_password_mode = BackupPasswordMode::BACKUP_CONFIRM;
+                return;
+            }
+            if (_backup_password_mode == BackupPasswordMode::BACKUP_CONFIRM &&
+                strcmp(_backup_passphrase, _edit_buffer) != 0) {
+                clearSensitiveText(_edit_buffer, sizeof(_edit_buffer));
+                _edit_buffer_length = 0;
+                _backup_password_mode = BackupPasswordMode::BACKUP_ENTER;
+                showBackupMessage("Passwords differ - retry");
+                return;
+            }
+
+            bool restoring = _backup_password_mode == BackupPasswordMode::RESTORE_ENTER;
+            const char* password = restoring ? _edit_buffer : _backup_passphrase;
+            _display->startFrame();
+            _display->setColor(DisplayDriver::DARK);
+            _display->fillRect(0, 0, 240, 135);
+            _display->setColor(DisplayDriver::LIGHT);
+            _display->setTextSize(2);
+            _display->setCursor(45, 52);
+            _display->print(restoring ? "Restoring..." : "Backing up...");
+            _display->endFrame();
+
+            MyMesh::SDPrefsResult result = restoring
+                ? the_mesh.restoreFullFromSD(password)
+                : the_mesh.backupFullToSD(password);
+            finishPasswordEntry();
+
+            const char* message = "Storage error";
+            switch (result) {
+                case MyMesh::SDPrefsResult::OK:
+                    message = restoring ? "Full backup restored" : "Full backup saved";
+                    break;
+                case MyMesh::SDPrefsResult::CARD_UNAVAILABLE:
+                    message = "Card not found";
+                    break;
+                case MyMesh::SDPrefsResult::BACKUP_NOT_FOUND:
+                    message = "Full backup not found";
+                    break;
+                case MyMesh::SDPrefsResult::INVALID_BACKUP:
+                    message = "Invalid backup file";
+                    break;
+                case MyMesh::SDPrefsResult::AUTH_FAILED:
+                    message = "Wrong password or damaged";
+                    break;
+                case MyMesh::SDPrefsResult::INCOMPATIBLE_BACKUP:
+                    message = "Partition size differs";
+                    break;
+                default:
+                    break;
+            }
+            showBackupMessage(message);
+            Serial.printf("[SD] Full %s result: %d\n", restoring ? "restore" : "backup", static_cast<int>(result));
+
+            if (restoring && (result == MyMesh::SDPrefsResult::OK || result == MyMesh::SDPrefsResult::IO_ERROR)) {
+                _display->startFrame();
+                renderNotification();
+                _display->endFrame();
+                delay(2500);
+                ESP.restart();
+            }
+            return;
+        }
+
+        _backspace_hold_start = 0;
+        _backspace_was_held = false;
+        if (status.space && _edit_buffer_length < static_cast<int>(sizeof(_edit_buffer) - 1)) {
+            _edit_buffer[_edit_buffer_length++] = ' ';
+            _edit_buffer[_edit_buffer_length] = '\0';
+        }
+        for (auto key : status.word) {
+            if (_edit_buffer_length < static_cast<int>(sizeof(_edit_buffer) - 1)) {
+                _edit_buffer[_edit_buffer_length++] = key;
+                _edit_buffer[_edit_buffer_length] = '\0';
+            }
+        }
+        return;
+    }
+
     // In chat mode with input active
     if (_menu_state == MenuScreen::CHAT && _input_mode) {
         if (status.enter) {
@@ -3153,8 +3331,8 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
             
         case MenuScreen::SETTINGS: {
             if (_settings_category == SettingsCategory::MAIN_MENU) {
-                // Main menu navigation with scrolling (5 categories, 3 visible)
-                int num_categories = 5;
+                // Main menu navigation with scrolling (3 visible at a time)
+                int num_categories = 6;
                 
                 if (up || down) {
                     if (_settings_item_idx == -1) {
@@ -3194,6 +3372,7 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                             case 2: _settings_category = SettingsCategory::THEME; break;
                             case 3: _settings_category = SettingsCategory::OTHER; break;
                             case 4: _settings_category = SettingsCategory::DEVICE_INFO; break;
+                            case 5: _settings_category = SettingsCategory::SD_BACKUP; break;
                         }
                         _settings_item_idx = 0;
                         _settings_menu_idx = 0;
@@ -3502,6 +3681,33 @@ void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
                     }
                 }
                 
+            } else if (_settings_category == SettingsCategory::SD_BACKUP) {
+                if (up || down) {
+                    if (_settings_menu_idx == 1) {
+                        _settings_menu_idx = 0;
+                        _settings_item_idx = 1;
+                    } else if (up && _settings_item_idx > 0) {
+                        _settings_item_idx--;
+                    } else if (down && _settings_item_idx < 1) {
+                        _settings_item_idx++;
+                    } else if (down && _settings_item_idx == 1) {
+                        _settings_menu_idx = 1;
+                    }
+                } else if (select) {
+                    if (_settings_menu_idx == 1) {
+                        _settings_category = SettingsCategory::MAIN_MENU;
+                        _settings_item_idx = 5;
+                        _settings_menu_idx = 0;
+                    } else {
+                        clearSensitiveText(_edit_buffer, sizeof(_edit_buffer));
+                        clearSensitiveText(_backup_passphrase, sizeof(_backup_passphrase));
+                        _edit_buffer_length = 0;
+                        _backup_password_mode = _settings_item_idx == 0
+                            ? BackupPasswordMode::BACKUP_ENTER
+                            : BackupPasswordMode::RESTORE_ENTER;
+                    }
+                }
+
             } else if (_settings_category == SettingsCategory::OTHER) {
                 // Other settings navigation (3 options: Sleep timeout, Factory Reset, Support)
                 const uint16_t timeout_values[] = {10, 30, 60, 120, 300, 0}; // 10s, 30s, 1min, 2min, 5min, Never

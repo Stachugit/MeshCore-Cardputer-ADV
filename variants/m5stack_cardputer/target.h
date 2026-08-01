@@ -37,6 +37,7 @@ public:
 #endif
 
 extern M5CardputerBoard board;
+extern SPIClass spi;
 extern WRAPPER_CLASS radio_driver;
 extern AutoDiscoverRTCClock rtc_clock;
 #ifdef HAS_GPS

@@ -9,6 +9,14 @@
 *.bin
 *.hex
 *.map
+/release/
+
+# Device backups and private MeshCore state
+/device-spiffs-extracted/
+/device-spiffs*/
+/device-*.bin
+/settings.dat
+*.mcb
 
 # IDE
 .idea/

@@ -156,7 +156,23 @@ protected:
   }
 
 public:
+  enum class SDPrefsResult {
+    OK,
+    CARD_UNAVAILABLE,
+    BACKUP_NOT_FOUND,
+    INVALID_BACKUP,
+    AUTH_FAILED,
+    INCOMPATIBLE_BACKUP,
+    IO_ERROR
+  };
+
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
+#if defined(M5STACK_CARDPUTER)
+  SDPrefsResult backupPrefsToSD();
+  SDPrefsResult restorePrefsFromSD();
+  SDPrefsResult backupFullToSD(const char* passphrase);
+  SDPrefsResult restoreFullFromSD(const char* passphrase);
+#endif
   void factoryReset() { _store->formatFileSystem(); }
   void saveContacts() { _store->saveContacts(this); }
   void saveChannels() { _store->saveChannels(this); }

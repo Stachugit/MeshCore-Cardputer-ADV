@@ -3,6 +3,99 @@
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
 
+#if defined(M5STACK_CARDPUTER)
+  #include <SD.h>
+
+  #ifndef P_SDCARD_CS
+    #define P_SDCARD_CS 12
+  #endif
+#endif
+
+#if defined(M5STACK_CARDPUTER)
+namespace {
+constexpr const char* SD_PREFS_DIRECTORY = "/meshcore";
+constexpr const char* SD_PREFS_FILENAME = "/meshcore/settings.dat";
+constexpr const char* SD_FULL_BACKUP_FILENAME = "/meshcore/full-backup.mcb";
+
+MyMesh::SDPrefsResult mapPrefsResult(DataStore::PrefsBackupResult result) {
+  switch (result) {
+    case DataStore::PrefsBackupResult::OK:
+      return MyMesh::SDPrefsResult::OK;
+    case DataStore::PrefsBackupResult::SOURCE_NOT_FOUND:
+      return MyMesh::SDPrefsResult::BACKUP_NOT_FOUND;
+    case DataStore::PrefsBackupResult::INVALID_BACKUP:
+      return MyMesh::SDPrefsResult::INVALID_BACKUP;
+    default:
+      return MyMesh::SDPrefsResult::IO_ERROR;
+  }
+}
+
+MyMesh::SDPrefsResult mapFullBackupResult(DataStore::FullBackupResult result) {
+  switch (result) {
+    case DataStore::FullBackupResult::OK:
+      return MyMesh::SDPrefsResult::OK;
+    case DataStore::FullBackupResult::SOURCE_NOT_FOUND:
+      return MyMesh::SDPrefsResult::BACKUP_NOT_FOUND;
+    case DataStore::FullBackupResult::INVALID_BACKUP:
+      return MyMesh::SDPrefsResult::INVALID_BACKUP;
+    case DataStore::FullBackupResult::AUTH_FAILED:
+      return MyMesh::SDPrefsResult::AUTH_FAILED;
+    case DataStore::FullBackupResult::INCOMPATIBLE_BACKUP:
+      return MyMesh::SDPrefsResult::INCOMPATIBLE_BACKUP;
+    default:
+      return MyMesh::SDPrefsResult::IO_ERROR;
+  }
+}
+}
+
+MyMesh::SDPrefsResult MyMesh::backupPrefsToSD() {
+  if (!SD.begin(P_SDCARD_CS, spi, 10000000)) {
+    return SDPrefsResult::CARD_UNAVAILABLE;
+  }
+  if (!SD.exists(SD_PREFS_DIRECTORY) && !SD.mkdir(SD_PREFS_DIRECTORY)) {
+    SD.end();
+    return SDPrefsResult::IO_ERROR;
+  }
+  SDPrefsResult result = mapPrefsResult(_store->backupPrefs(SD, SD_PREFS_FILENAME));
+  SD.end();
+  return result;
+}
+
+MyMesh::SDPrefsResult MyMesh::restorePrefsFromSD() {
+  if (!SD.begin(P_SDCARD_CS, spi, 10000000)) {
+    return SDPrefsResult::CARD_UNAVAILABLE;
+  }
+  SDPrefsResult result = mapPrefsResult(_store->restorePrefs(SD, SD_PREFS_FILENAME));
+  SD.end();
+  return result;
+}
+
+
+MyMesh::SDPrefsResult MyMesh::backupFullToSD(const char* passphrase) {
+  if (!SD.begin(P_SDCARD_CS, spi, 10000000)) {
+    return SDPrefsResult::CARD_UNAVAILABLE;
+  }
+  if (!SD.exists(SD_PREFS_DIRECTORY) && !SD.mkdir(SD_PREFS_DIRECTORY)) {
+    SD.end();
+    return SDPrefsResult::IO_ERROR;
+  }
+  SDPrefsResult result = mapFullBackupResult(
+    _store->backupFullEncrypted(SD, SD_FULL_BACKUP_FILENAME, passphrase));
+  SD.end();
+  return result;
+}
+
+MyMesh::SDPrefsResult MyMesh::restoreFullFromSD(const char* passphrase) {
+  if (!SD.begin(P_SDCARD_CS, spi, 10000000)) {
+    return SDPrefsResult::CARD_UNAVAILABLE;
+  }
+  SDPrefsResult result = mapFullBackupResult(
+    _store->restoreFullEncrypted(SD, SD_FULL_BACKUP_FILENAME, passphrase));
+  SD.end();
+  return result;
+}
+#endif
+
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
 #define CMD_SEND_CHANNEL_TXT_MSG      3

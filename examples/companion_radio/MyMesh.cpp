@@ -42,6 +42,10 @@ MyMesh::SDPrefsResult mapFullBackupResult(DataStore::FullBackupResult result) {
       return MyMesh::SDPrefsResult::AUTH_FAILED;
     case DataStore::FullBackupResult::INCOMPATIBLE_BACKUP:
       return MyMesh::SDPrefsResult::INCOMPATIBLE_BACKUP;
+    case DataStore::FullBackupResult::READ_FAILED:
+      return MyMesh::SDPrefsResult::READ_ERROR;
+    case DataStore::FullBackupResult::WRITE_FAILED:
+      return MyMesh::SDPrefsResult::WRITE_ERROR;
     default:
       return MyMesh::SDPrefsResult::IO_ERROR;
   }

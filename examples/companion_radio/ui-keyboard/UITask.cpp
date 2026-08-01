@@ -2207,13 +2207,21 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
                 case MyMesh::SDPrefsResult::INCOMPATIBLE_BACKUP:
                     message = "Partition size differs";
                     break;
+                case MyMesh::SDPrefsResult::READ_ERROR:
+                    message = "Backup source read error";
+                    break;
+                case MyMesh::SDPrefsResult::WRITE_ERROR:
+                    message = restoring ? "Flash write error" : "SD card write error";
+                    break;
                 default:
                     break;
             }
             showBackupMessage(message);
             Serial.printf("[SD] Full %s result: %d\n", restoring ? "restore" : "backup", static_cast<int>(result));
 
-            if (restoring && (result == MyMesh::SDPrefsResult::OK || result == MyMesh::SDPrefsResult::IO_ERROR)) {
+            if (restoring && (result == MyMesh::SDPrefsResult::OK ||
+                              result == MyMesh::SDPrefsResult::WRITE_ERROR ||
+                              result == MyMesh::SDPrefsResult::IO_ERROR)) {
                 _display->startFrame();
                 renderNotification();
                 _display->endFrame();

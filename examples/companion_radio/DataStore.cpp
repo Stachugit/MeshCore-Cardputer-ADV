@@ -448,9 +448,14 @@ bool deriveBackupKey(const char* passphrase, const FullBackupHeader& header, uin
 bool readUIBackupPrefix(FullBackupPrefix& prefix) {
   memcpy(prefix.magic, "MCUI", 4);
   prefix.version = 1;
+  prefix.brightness = 128;
+  prefix.main_color = 0;
+  prefix.secondary_color = 1;
   memset(prefix.reserved, 0, sizeof(prefix.reserved));
   Preferences preferences;
-  if (!preferences.begin("ui_settings", true)) return false;
+  // A fresh device may not have created this optional namespace yet. In that
+  // case, preserve the same defaults used by UITask::loadSettings().
+  if (!preferences.begin("ui_settings", true)) return true;
   prefix.brightness = preferences.getUChar("brightness", 128);
   prefix.main_color = preferences.getUChar("main_color", 0);
   prefix.secondary_color = preferences.getUChar("sec_color", 1);

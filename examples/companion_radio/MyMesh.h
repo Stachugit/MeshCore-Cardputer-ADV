@@ -163,6 +163,8 @@ public:
     INVALID_BACKUP,
     AUTH_FAILED,
     INCOMPATIBLE_BACKUP,
+    READ_ERROR,
+    WRITE_ERROR,
     IO_ERROR
   };
 

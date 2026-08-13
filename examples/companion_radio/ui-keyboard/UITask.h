@@ -28,7 +28,15 @@ enum class SettingsCategory {
     RADIO_SETUP,    // Radio configuration
     OTHER,          // Other settings
     DEVICE_INFO,    // Device information
-    RADIO_PRESET    // Radio preset selection
+    RADIO_PRESET,   // Radio preset selection
+    SD_BACKUP       // Save/restore SPIFFS-backed settings on microSD
+};
+
+enum class BackupPasswordMode {
+    NONE,
+    BACKUP_ENTER,
+    BACKUP_CONFIRM,
+    RESTORE_ENTER
 };
 
 // Radio preset structure
@@ -154,6 +162,8 @@ private:
     bool _show_qr_code;
     char _edit_buffer[64]; // For editing name/radio params
     int _edit_buffer_length;
+    BackupPasswordMode _backup_password_mode;
+    char _backup_passphrase[64];
     
     // Radio parameter editing state
     bool _editing_frequency;

@@ -65,6 +65,14 @@ void DataStore::begin() {
 
 #if defined(ESP32)
   #include <SPIFFS.h>
+#if defined(M5STACK_CARDPUTER)
+  #include <Preferences.h>
+  #include <esp_partition.h>
+  #include <esp_random.h>
+  #include <mbedtls/gcm.h>
+  #include <mbedtls/md.h>
+  #include <mbedtls/pkcs5.h>
+#endif
 #elif defined(RP2040_PLATFORM)
   #include <LittleFS.h>
 #elif defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
@@ -264,6 +272,450 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.close();
   }
 }
+
+#if defined(ESP32)
+namespace {
+constexpr size_t MAX_PREFS_FILE_SIZE = 512;
+constexpr uint8_t PREFS_BACKUP_MAGIC[4] = {'M', 'C', 'P', 'S'};
+constexpr uint16_t PREFS_BACKUP_VERSION = 1;
+
+uint32_t prefsCrc32(const uint8_t* data, size_t length) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < length; ++i) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+  }
+  return ~crc;
+}
+
+bool readExact(File& file, uint8_t* buffer, size_t length) {
+  return file.read(buffer, length) == length;
+}
+}
+
+DataStore::PrefsBackupResult DataStore::backupPrefs(FILESYSTEM& destination, const char* filename) {
+  File source = openRead(_fs, "/new_prefs");
+  if (!source) return PrefsBackupResult::SOURCE_NOT_FOUND;
+  const size_t payload_size = source.size();
+  if (payload_size == 0 || payload_size > MAX_PREFS_FILE_SIZE) {
+    source.close();
+    return PrefsBackupResult::READ_FAILED;
+  }
+
+  uint8_t payload[MAX_PREFS_FILE_SIZE];
+  if (!readExact(source, payload, payload_size)) {
+    source.close();
+    return PrefsBackupResult::READ_FAILED;
+  }
+  source.close();
+
+  File backup = destination.open(filename, "w");
+  if (!backup) return PrefsBackupResult::WRITE_FAILED;
+
+  const uint16_t payload_length = payload_size;
+  const uint32_t crc = prefsCrc32(payload, payload_size);
+  bool success = backup.write(PREFS_BACKUP_MAGIC, sizeof(PREFS_BACKUP_MAGIC)) == sizeof(PREFS_BACKUP_MAGIC);
+  success = success && backup.write(reinterpret_cast<const uint8_t*>(&PREFS_BACKUP_VERSION), sizeof(PREFS_BACKUP_VERSION)) == sizeof(PREFS_BACKUP_VERSION);
+  success = success && backup.write(reinterpret_cast<const uint8_t*>(&payload_length), sizeof(payload_length)) == sizeof(payload_length);
+  success = success && backup.write(reinterpret_cast<const uint8_t*>(&crc), sizeof(crc)) == sizeof(crc);
+  success = success && backup.write(payload, payload_size) == payload_size;
+  backup.flush();
+  backup.close();
+
+  if (!success) {
+    destination.remove(filename);
+    return PrefsBackupResult::WRITE_FAILED;
+  }
+  return PrefsBackupResult::OK;
+}
+
+DataStore::PrefsBackupResult DataStore::restorePrefs(FILESYSTEM& source, const char* filename) {
+  File backup = source.open(filename, "r");
+  if (!backup) return PrefsBackupResult::SOURCE_NOT_FOUND;
+
+  uint8_t magic[sizeof(PREFS_BACKUP_MAGIC)];
+  uint16_t version = 0;
+  uint16_t payload_length = 0;
+  uint32_t stored_crc = 0;
+  uint8_t payload[MAX_PREFS_FILE_SIZE];
+
+  bool success = readExact(backup, magic, sizeof(magic));
+  success = success && readExact(backup, reinterpret_cast<uint8_t*>(&version), sizeof(version));
+  success = success && readExact(backup, reinterpret_cast<uint8_t*>(&payload_length), sizeof(payload_length));
+  success = success && readExact(backup, reinterpret_cast<uint8_t*>(&stored_crc), sizeof(stored_crc));
+  if (!success || memcmp(magic, PREFS_BACKUP_MAGIC, sizeof(magic)) != 0 ||
+      version != PREFS_BACKUP_VERSION || payload_length == 0 || payload_length > sizeof(payload) ||
+      backup.size() != sizeof(magic) + sizeof(version) + sizeof(payload_length) + sizeof(stored_crc) + payload_length) {
+    backup.close();
+    return PrefsBackupResult::INVALID_BACKUP;
+  }
+  success = readExact(backup, payload, payload_length);
+  backup.close();
+  if (!success || prefsCrc32(payload, payload_length) != stored_crc) {
+    return PrefsBackupResult::INVALID_BACKUP;
+  }
+
+  const char* temporary = "/new_prefs.tmp";
+  const char* previous = "/new_prefs.bak";
+  if (_fs->exists(temporary)) _fs->remove(temporary);
+  File restored = openWrite(_fs, temporary);
+  if (!restored) return PrefsBackupResult::WRITE_FAILED;
+  success = restored.write(payload, payload_length) == payload_length;
+  restored.flush();
+  restored.close();
+  if (!success) {
+    if (_fs->exists(temporary)) _fs->remove(temporary);
+    return PrefsBackupResult::WRITE_FAILED;
+  }
+
+  if (_fs->exists(previous)) _fs->remove(previous);
+  bool had_current = _fs->exists("/new_prefs");
+  if (had_current && !_fs->rename("/new_prefs", previous)) {
+    if (_fs->exists(temporary)) _fs->remove(temporary);
+    return PrefsBackupResult::WRITE_FAILED;
+  }
+  if (!_fs->rename(temporary, "/new_prefs")) {
+    if (had_current) _fs->rename(previous, "/new_prefs");
+    if (_fs->exists(temporary)) _fs->remove(temporary);
+    return PrefsBackupResult::WRITE_FAILED;
+  }
+  if (_fs->exists(previous)) _fs->remove(previous);
+  return PrefsBackupResult::OK;
+}
+
+#if defined(M5STACK_CARDPUTER)
+namespace {
+constexpr uint8_t FULL_BACKUP_MAGIC[4] = {'M', 'C', 'F', 'B'};
+constexpr uint16_t FULL_BACKUP_VERSION = 1;
+constexpr uint32_t FULL_BACKUP_PBKDF2_ITERATIONS = 100000;
+constexpr size_t FULL_BACKUP_CHUNK = 1024;
+constexpr size_t FULL_BACKUP_TAG_SIZE = 16;
+
+#pragma pack(push, 1)
+struct FullBackupHeader {
+  uint8_t magic[4];
+  uint16_t version;
+  uint16_t header_size;
+  uint32_t iterations;
+  uint32_t partition_size;
+  uint32_t plaintext_size;
+  uint8_t salt[16];
+  uint8_t nonce[12];
+};
+
+struct FullBackupPrefix {
+  uint8_t magic[4];
+  uint8_t version;
+  uint8_t brightness;
+  uint8_t main_color;
+  uint8_t secondary_color;
+  uint8_t reserved[8];
+};
+#pragma pack(pop)
+
+static_assert(sizeof(FullBackupHeader) == 48, "Unexpected backup header size");
+static_assert(sizeof(FullBackupPrefix) == 16, "Unexpected backup prefix size");
+
+void secureClear(void* data, size_t length) {
+  volatile uint8_t* bytes = static_cast<volatile uint8_t*>(data);
+  while (length--) *bytes++ = 0;
+}
+
+bool constantTimeEqual(const uint8_t* left, const uint8_t* right, size_t length) {
+  uint8_t difference = 0;
+  for (size_t i = 0; i < length; ++i) difference |= left[i] ^ right[i];
+  return difference == 0;
+}
+
+bool deriveBackupKey(const char* passphrase, const FullBackupHeader& header, uint8_t key[32]) {
+  if (!passphrase || !passphrase[0]) return false;
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (!info) return false;
+  mbedtls_md_context_t md;
+  mbedtls_md_init(&md);
+  int result = mbedtls_md_setup(&md, info, 1);
+  if (result == 0) {
+    result = mbedtls_pkcs5_pbkdf2_hmac(
+      &md, reinterpret_cast<const uint8_t*>(passphrase), strlen(passphrase),
+      header.salt, sizeof(header.salt), header.iterations, 32, key);
+  }
+  mbedtls_md_free(&md);
+  return result == 0;
+}
+
+bool readUIBackupPrefix(FullBackupPrefix& prefix) {
+  memcpy(prefix.magic, "MCUI", 4);
+  prefix.version = 1;
+  prefix.brightness = 128;
+  prefix.main_color = 0;
+  prefix.secondary_color = 1;
+  memset(prefix.reserved, 0, sizeof(prefix.reserved));
+  Preferences preferences;
+  // A fresh device may not have created this optional namespace yet. In that
+  // case, preserve the same defaults used by UITask::loadSettings().
+  if (!preferences.begin("ui_settings", true)) return true;
+  prefix.brightness = preferences.getUChar("brightness", 128);
+  prefix.main_color = preferences.getUChar("main_color", 0);
+  prefix.secondary_color = preferences.getUChar("sec_color", 1);
+  preferences.end();
+  return true;
+}
+
+bool writeUIBackupPrefix(const FullBackupPrefix& prefix) {
+  Preferences preferences;
+  if (!preferences.begin("ui_settings", false)) return false;
+  bool success = preferences.putUChar("brightness", prefix.brightness) == 1;
+  success = success && preferences.putUChar("main_color", prefix.main_color) == 1;
+  success = success && preferences.putUChar("sec_color", prefix.secondary_color) == 1;
+  preferences.end();
+  return success;
+}
+
+const esp_partition_t* findSPIFFSPartition() {
+  return esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+}
+
+bool validFullBackupHeader(const FullBackupHeader& header, size_t file_size, uint32_t partition_size) {
+  return memcmp(header.magic, FULL_BACKUP_MAGIC, sizeof(header.magic)) == 0 &&
+    header.version == FULL_BACKUP_VERSION && header.header_size == sizeof(header) &&
+    header.iterations >= 10000 && header.iterations <= 1000000 &&
+    header.partition_size == partition_size &&
+    header.plaintext_size == sizeof(FullBackupPrefix) + partition_size &&
+    file_size == sizeof(header) + header.plaintext_size + FULL_BACKUP_TAG_SIZE;
+}
+
+DataStore::FullBackupResult authenticateFullBackup(
+    FILESYSTEM& source, const char* filename, const esp_partition_t* partition,
+    const char* passphrase, FullBackupHeader& header, FullBackupPrefix& prefix,
+    uint8_t key[32]) {
+  File input = source.open(filename, "r");
+  if (!input) return DataStore::FullBackupResult::SOURCE_NOT_FOUND;
+  if (!readExact(input, reinterpret_cast<uint8_t*>(&header), sizeof(header))) {
+    input.close();
+    return DataStore::FullBackupResult::READ_FAILED;
+  }
+  if (memcmp(header.magic, FULL_BACKUP_MAGIC, sizeof(header.magic)) != 0 ||
+      header.version != FULL_BACKUP_VERSION || header.header_size != sizeof(header)) {
+    input.close();
+    return DataStore::FullBackupResult::INVALID_BACKUP;
+  }
+  if (header.partition_size != partition->size) {
+    input.close();
+    return DataStore::FullBackupResult::INCOMPATIBLE_BACKUP;
+  }
+  if (!validFullBackupHeader(header, input.size(), partition->size)) {
+    input.close();
+    return DataStore::FullBackupResult::INVALID_BACKUP;
+  }
+  if (!deriveBackupKey(passphrase, header, key)) {
+    input.close();
+    return DataStore::FullBackupResult::AUTH_FAILED;
+  }
+
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
+  int crypto_result = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 256);
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_gcm_starts(&gcm, MBEDTLS_GCM_DECRYPT, header.nonce,
+      sizeof(header.nonce), reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+  }
+
+  uint8_t encrypted[FULL_BACKUP_CHUNK];
+  uint8_t plaintext[FULL_BACKUP_CHUNK];
+  uint32_t remaining = header.plaintext_size;
+  bool got_prefix = false;
+  while (crypto_result == 0 && remaining > 0) {
+    size_t length = min(static_cast<uint32_t>(sizeof(encrypted)), remaining);
+    if (!readExact(input, encrypted, length)) {
+      crypto_result = -1;
+      break;
+    }
+    crypto_result = mbedtls_gcm_update(&gcm, length, encrypted, plaintext);
+    if (!got_prefix && crypto_result == 0) {
+      memcpy(&prefix, plaintext, sizeof(prefix));
+      got_prefix = true;
+    }
+    remaining -= length;
+  }
+  uint8_t calculated_tag[FULL_BACKUP_TAG_SIZE];
+  uint8_t stored_tag[FULL_BACKUP_TAG_SIZE];
+  if (crypto_result == 0) crypto_result = mbedtls_gcm_finish(&gcm, calculated_tag, sizeof(calculated_tag));
+  bool tag_read = readExact(input, stored_tag, sizeof(stored_tag));
+  input.close();
+  mbedtls_gcm_free(&gcm);
+  secureClear(encrypted, sizeof(encrypted));
+  secureClear(plaintext, sizeof(plaintext));
+
+  if (crypto_result != 0 || !tag_read || !constantTimeEqual(calculated_tag, stored_tag, sizeof(stored_tag))) {
+    secureClear(calculated_tag, sizeof(calculated_tag));
+    secureClear(stored_tag, sizeof(stored_tag));
+    secureClear(key, 32);
+    return DataStore::FullBackupResult::AUTH_FAILED;
+  }
+  secureClear(calculated_tag, sizeof(calculated_tag));
+  secureClear(stored_tag, sizeof(stored_tag));
+  if (!got_prefix || memcmp(prefix.magic, "MCUI", 4) != 0 || prefix.version != 1) {
+    secureClear(key, 32);
+    return DataStore::FullBackupResult::INVALID_BACKUP;
+  }
+  return DataStore::FullBackupResult::OK;
+}
+}
+
+DataStore::FullBackupResult DataStore::backupFullEncrypted(
+    FILESYSTEM& destination, const char* filename, const char* passphrase) {
+  const esp_partition_t* partition = findSPIFFSPartition();
+  if (!partition) return FullBackupResult::READ_FAILED;
+
+  FullBackupHeader header{};
+  memcpy(header.magic, FULL_BACKUP_MAGIC, sizeof(header.magic));
+  header.version = FULL_BACKUP_VERSION;
+  header.header_size = sizeof(header);
+  header.iterations = FULL_BACKUP_PBKDF2_ITERATIONS;
+  header.partition_size = partition->size;
+  header.plaintext_size = sizeof(FullBackupPrefix) + partition->size;
+  esp_fill_random(header.salt, sizeof(header.salt));
+  esp_fill_random(header.nonce, sizeof(header.nonce));
+
+  uint8_t key[32];
+  if (!deriveBackupKey(passphrase, header, key)) return FullBackupResult::WRITE_FAILED;
+  FullBackupPrefix prefix{};
+  if (!readUIBackupPrefix(prefix)) {
+    secureClear(key, sizeof(key));
+    return FullBackupResult::READ_FAILED;
+  }
+
+  String temporary = String(filename) + ".tmp";
+  String previous = String(filename) + ".bak";
+  if (destination.exists(temporary)) destination.remove(temporary);
+  File output = destination.open(temporary, "w");
+  if (!output) {
+    secureClear(key, sizeof(key));
+    return FullBackupResult::WRITE_FAILED;
+  }
+
+  bool success = output.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) == sizeof(header);
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
+  int crypto_result = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 256);
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_gcm_starts(&gcm, MBEDTLS_GCM_ENCRYPT, header.nonce,
+      sizeof(header.nonce), reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+  }
+
+  uint8_t encrypted[FULL_BACKUP_CHUNK];
+  crypto_result = crypto_result == 0
+    ? mbedtls_gcm_update(&gcm, sizeof(prefix), reinterpret_cast<const uint8_t*>(&prefix), encrypted)
+    : crypto_result;
+  success = success && crypto_result == 0 && output.write(encrypted, sizeof(prefix)) == sizeof(prefix);
+
+  uint8_t plaintext[FULL_BACKUP_CHUNK];
+  for (uint32_t offset = 0; success && offset < partition->size; offset += sizeof(plaintext)) {
+    size_t length = min(static_cast<uint32_t>(sizeof(plaintext)), partition->size - offset);
+    if (esp_partition_read(partition, offset, plaintext, length) != ESP_OK ||
+        mbedtls_gcm_update(&gcm, length, plaintext, encrypted) != 0 ||
+        output.write(encrypted, length) != length) {
+      success = false;
+    }
+  }
+  uint8_t tag[FULL_BACKUP_TAG_SIZE];
+  if (success && mbedtls_gcm_finish(&gcm, tag, sizeof(tag)) == 0) {
+    success = output.write(tag, sizeof(tag)) == sizeof(tag);
+  } else {
+    success = false;
+  }
+  output.flush();
+  output.close();
+  mbedtls_gcm_free(&gcm);
+  secureClear(key, sizeof(key));
+  secureClear(plaintext, sizeof(plaintext));
+  secureClear(encrypted, sizeof(encrypted));
+  secureClear(tag, sizeof(tag));
+
+  if (!success) {
+    if (destination.exists(temporary)) destination.remove(temporary);
+    return FullBackupResult::WRITE_FAILED;
+  }
+  if (destination.exists(previous)) destination.remove(previous);
+  bool had_current = destination.exists(filename);
+  if (had_current && !destination.rename(filename, previous)) {
+    destination.remove(temporary);
+    return FullBackupResult::WRITE_FAILED;
+  }
+  if (!destination.rename(temporary, filename)) {
+    if (had_current) destination.rename(previous, filename);
+    destination.remove(temporary);
+    return FullBackupResult::WRITE_FAILED;
+  }
+  if (destination.exists(previous)) destination.remove(previous);
+  return FullBackupResult::OK;
+}
+
+DataStore::FullBackupResult DataStore::restoreFullEncrypted(
+    FILESYSTEM& source, const char* filename, const char* passphrase) {
+  const esp_partition_t* partition = findSPIFFSPartition();
+  if (!partition) return FullBackupResult::WRITE_FAILED;
+
+  FullBackupHeader header{};
+  FullBackupPrefix prefix{};
+  uint8_t key[32];
+  FullBackupResult authenticated = authenticateFullBackup(
+    source, filename, partition, passphrase, header, prefix, key);
+  if (authenticated != FullBackupResult::OK) return authenticated;
+
+  File input = source.open(filename, "r");
+  if (!input || !input.seek(sizeof(header))) {
+    if (input) input.close();
+    secureClear(key, sizeof(key));
+    return FullBackupResult::READ_FAILED;
+  }
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
+  int crypto_result = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 256);
+  if (crypto_result == 0) {
+    crypto_result = mbedtls_gcm_starts(&gcm, MBEDTLS_GCM_DECRYPT, header.nonce,
+      sizeof(header.nonce), reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+  }
+
+  uint8_t encrypted[FULL_BACKUP_CHUNK];
+  uint8_t plaintext[FULL_BACKUP_CHUNK];
+  if (!readExact(input, encrypted, sizeof(prefix)) ||
+      mbedtls_gcm_update(&gcm, sizeof(prefix), encrypted, plaintext) != 0) {
+    crypto_result = -1;
+  }
+
+  // Authentication above completed before this destructive point.
+  SPIFFS.end();
+  if (crypto_result == 0 && esp_partition_erase_range(partition, 0, partition->size) != ESP_OK) {
+    crypto_result = -1;
+  }
+  for (uint32_t offset = 0; crypto_result == 0 && offset < partition->size; offset += sizeof(plaintext)) {
+    size_t length = min(static_cast<uint32_t>(sizeof(plaintext)), partition->size - offset);
+    if (!readExact(input, encrypted, length) ||
+        mbedtls_gcm_update(&gcm, length, encrypted, plaintext) != 0 ||
+        esp_partition_write(partition, offset, plaintext, length) != ESP_OK) {
+      crypto_result = -1;
+    }
+  }
+  uint8_t calculated_tag[FULL_BACKUP_TAG_SIZE];
+  uint8_t stored_tag[FULL_BACKUP_TAG_SIZE];
+  if (crypto_result == 0) crypto_result = mbedtls_gcm_finish(&gcm, calculated_tag, sizeof(calculated_tag));
+  bool tag_read = readExact(input, stored_tag, sizeof(stored_tag));
+  input.close();
+  mbedtls_gcm_free(&gcm);
+  bool success = crypto_result == 0 && tag_read &&
+    constantTimeEqual(calculated_tag, stored_tag, sizeof(stored_tag)) && writeUIBackupPrefix(prefix);
+  secureClear(key, sizeof(key));
+  secureClear(plaintext, sizeof(plaintext));
+  secureClear(encrypted, sizeof(encrypted));
+  secureClear(calculated_tag, sizeof(calculated_tag));
+  secureClear(stored_tag, sizeof(stored_tag));
+  return success ? FullBackupResult::OK : FullBackupResult::WRITE_FAILED;
+}
+#endif
+#endif
 
 void DataStore::loadContacts(DataStoreHost* host) {
 File file = openRead(_getContactsChannelsFS(), "/contacts3");

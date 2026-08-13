@@ -25,6 +25,24 @@ class DataStore {
 #endif
 
 public:
+  enum class PrefsBackupResult {
+    OK,
+    SOURCE_NOT_FOUND,
+    INVALID_BACKUP,
+    READ_FAILED,
+    WRITE_FAILED
+  };
+
+  enum class FullBackupResult {
+    OK,
+    SOURCE_NOT_FOUND,
+    INVALID_BACKUP,
+    AUTH_FAILED,
+    INCOMPATIBLE_BACKUP,
+    READ_FAILED,
+    WRITE_FAILED
+  };
+
   DataStore(FILESYSTEM& fs, mesh::RTCClock& clock);
   DataStore(FILESYSTEM& fs, FILESYSTEM& fsExtra, mesh::RTCClock& clock);
   void begin();
@@ -35,6 +53,14 @@ public:
   bool saveMainIdentity(const mesh::LocalIdentity &identity);
   void loadPrefs(NodePrefs& prefs, double& node_lat, double& node_lon);
   void savePrefs(const NodePrefs& prefs, double node_lat, double node_lon);
+#if defined(ESP32)
+  PrefsBackupResult backupPrefs(FILESYSTEM& destination, const char* filename);
+  PrefsBackupResult restorePrefs(FILESYSTEM& source, const char* filename);
+#if defined(M5STACK_CARDPUTER)
+  FullBackupResult backupFullEncrypted(FILESYSTEM& destination, const char* filename, const char* passphrase);
+  FullBackupResult restoreFullEncrypted(FILESYSTEM& source, const char* filename, const char* passphrase);
+#endif
+#endif
   void loadContacts(DataStoreHost* host);
   void saveContacts(DataStoreHost* host);
   void loadChannels(DataStoreHost* host);

@@ -3,7 +3,7 @@
 
 M5CardputerBoard board;
 
-static SPIClass spi;
+SPIClass spi;
 RADIO_CLASS radio = new Module(P_LORA_NSS, P_LORA_DIO_1, P_LORA_RESET, P_LORA_BUSY, spi, SPISettings());
 
 // RF switch control pins (only for modules with external RF switch like DX-LR30)

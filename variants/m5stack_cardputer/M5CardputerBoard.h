@@ -30,12 +30,19 @@ public:
     delay(100);
     M5Cardputer.Keyboard.begin();
 
-    M5.In_I2C.writeRegister8(0x43, 0x03, 0x00, 100000);  
+    // Step 4: Configure LoRa Cap I/O expander (PI4IOE at 0x43 on SDA=8, SCL=9)
+    // Critical: Pin P0 controls the FM8625H RF switch (SX_ANT_SW).
+    // It MUST be configured as push-pull output and driven HIGH to connect the antenna for RX and TX.
+    bool ok_dir = M5.In_I2C.writeRegister8(0x43, 0x03, 0xFF, 100000);  // Reg 0x03: IO Direction (1 = Output)
     delay(10);
-    M5.In_I2C.writeRegister8(0x43, 0x01, 0xFF, 100000);  
-    delay(200); 
+    bool ok_hiz = M5.In_I2C.writeRegister8(0x43, 0x07, 0x00, 100000);  // Reg 0x07: Output High-Impedance (0 = Push-pull active)
+    delay(10);
+    bool ok_out = M5.In_I2C.writeRegister8(0x43, 0x05, 0xFF, 100000);  // Reg 0x05: Output State (1 = HIGH, P0 = 1)
+    delay(10); 
 
-    Serial.println("LoRa Cap I/O expander (PI4IOE at 0x43 on SDA=8,SCL=9) configured");
+    uint8_t reg5 = M5.In_I2C.readRegister8(0x43, 0x05, 100000);
+    Serial.printf("LoRa Cap I/O expander (PI4IOE at 0x43 on SDA=8,SCL=9): dir=%d, hiz=%d, out=%d, reg5=0x%02X\n",
+                  ok_dir, ok_hiz, ok_out, reg5);
 
     Serial.println("M5Stack Cardputer-Adv initialized");
     Serial.print("Battery voltage: ");

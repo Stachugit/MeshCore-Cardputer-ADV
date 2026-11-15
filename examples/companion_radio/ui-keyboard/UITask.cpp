@@ -2069,7 +2069,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
             _input_length = 0;
         } else if (status.fn) {
             // Check for FN+` (escape)
-            bool has_backtick = false;
+            bool has_backtick = status.esc;
             for (auto key : status.word) {
                 if (key == '`') has_backtick = true;
             }
@@ -2104,7 +2104,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
                 _input_buffer[0] = '\0';
                 _input_length = 0;
             }
-        } else if (status.del) {
+        } else if (status.del || status.backspace) {
             // Backspace - start hold timer and delete one char
             if (_backspace_hold_start == 0) {
                 _backspace_hold_start = millis();
@@ -2135,6 +2135,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
                 }
             }
         }
+        return;
     }
     
     // In chat mode but not typing - start typing on any key
@@ -2142,9 +2143,9 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
         // Check for FN combinations first
         if (status.fn) {
             // FN+` = back to list
-            bool has_backtick = false;
-            bool has_semicolon = false;
-            bool has_period = false;
+            bool has_backtick = status.esc;
+            bool has_semicolon = status.up;
+            bool has_period = status.down;
             
             for (auto key : status.word) {
                 if (key == '`') has_backtick = true;
@@ -2244,7 +2245,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
             }
         } else if (status.fn) {
             // Check for FN+` (escape)
-            bool has_backtick = false;
+            bool has_backtick = status.esc;
             for (auto key : status.word) {
                 if (key == '`') has_backtick = true;
             }
@@ -2259,7 +2260,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
             _editing_name = false;
             _edit_buffer[0] = '\0';
             _edit_buffer_length = 0;
-        } else if (status.del) {
+        } else if (status.del || status.backspace) {
             // Backspace
             if (_backspace_hold_start == 0) {
                 _backspace_hold_start = millis();
@@ -2468,7 +2469,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
             }
         } else if (status.fn) {
             // Check for FN+` (escape)
-            bool has_backtick = false;
+            bool has_backtick = status.esc;
             for (auto key : status.word) {
                 if (key == '`') has_backtick = true;
             }
@@ -2493,7 +2494,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
             _edit_buffer[0] = '\0';
             _edit_buffer_length = 0;
             _manual_setup_step = -1;
-        } else if (status.del) {
+        } else if (status.del || status.backspace) {
             // Backspace
             if (_backspace_hold_start == 0) {
                 _backspace_hold_start = millis();
@@ -2598,7 +2599,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
             }
         } else if (status.fn) {
             // Check for FN+` (escape)
-            bool has_backtick = false;
+            bool has_backtick = status.esc;
             for (auto key : status.word) {
                 if (key == '`') has_backtick = true;
             }
@@ -2618,6 +2619,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
         // Check for FN+` (escape) or OPT button
         bool has_escape = false;
         if (status.fn) {
+            if (status.esc) has_escape = true;
             for (auto key : status.word) {
                 if (key == '`') has_escape = true;
             }
@@ -2666,8 +2668,8 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
     // In CONTACTS or CHANNELS menu - check for navigation first, then filter
     if (_menu_state == MenuScreen::CONTACTS || _menu_state == MenuScreen::CHANNELS) {
         // Check for FN+DEL combination first (delete contact/channel)
-        // FN modifier is in status.fn, DEL key (BACKSPACE) is in status.del
-        if (status.fn && status.del) {
+        // FN modifier is in status.fn, DEL key (BACKSPACE) is in status.del/status.backspace
+        if (status.fn && (status.del || status.backspace)) {
             // Only process deletion once per key press (not continuously on hold)
             if (!_delete_processed) {
                 _delete_processed = true;
@@ -2841,7 +2843,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
         // If navigation keys detected, skip to navigation handling
         if (has_nav_keys) {
             // Fall through to handleNavigation
-        } else if (status.del) {
+        } else if (status.del || status.backspace) {
             // Backspace - start hold timer and delete one char
             if (_backspace_hold_start == 0) {
                 _backspace_hold_start = millis();
@@ -2882,7 +2884,7 @@ void UITask::handleKeyPress(Keyboard_Class::KeysState& status) {
 }
 
 void UITask::handleNavigation(Keyboard_Class::KeysState& status) {
-    bool up = false, down = false, left = false, right = false, select = false;
+    bool up = status.up, down = status.down, left = status.left, right = status.right, select = false;
     
     for (auto key : status.word) {
         char c = key;

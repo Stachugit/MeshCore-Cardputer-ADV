@@ -33,7 +33,10 @@ public:
 
   bool begin() {
     _isOn = true;
-    M5.Display.setRotation(1);  // Landscape orientation
+#ifndef DISPLAY_ROTATION
+#define DISPLAY_ROTATION 0  // 0 = Landscape (240x135), 2 = Inverted Landscape
+#endif
+    M5.Display.setRotation(DISPLAY_ROTATION);  // Landscape orientation
     M5.Display.fillScreen(TFT_BLACK);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.setTextSize(1);
